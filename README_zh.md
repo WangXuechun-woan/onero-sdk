@@ -41,6 +41,8 @@ pip install -e ".[full]"      # 全部安装
 
 ### 关节运动
 
+<p align="center"><img src="docs/assets/movej.gif" width="500" alt="movej demo"></p>
+
 ```python
 from onero_sdk import Arm
 
@@ -56,6 +58,8 @@ with Arm("A1", channel="can0") as arm:
 
 ### 末端直线运动
 
+<p align="center"><img src="docs/assets/movel.gif" width="500" alt="movel demo"></p>
+
 ```python
 import numpy as np
 from onero_sdk import Arm
@@ -69,6 +73,8 @@ with Arm("A1", channel="can0") as arm:
 ```
 
 ### 实时伺服控制（100Hz）
+
+<p align="center"><img src="docs/assets/servo_sine.gif" width="500" alt="servo control demo"></p>
 
 ```python
 import time, math
@@ -90,6 +96,8 @@ finally:
 
 ### 速度控制
 
+<p align="center"><img src="docs/assets/speedj.gif" width="500" alt="velocity control demo"></p>
+
 ```python
 from onero_sdk import Arm
 
@@ -102,6 +110,8 @@ with Arm("A1", channel="can0") as arm:
 ```
 
 ### 示教模式（freedrive）+ 录制
+
+<p align="center"><img src="docs/assets/freedrive.gif" width="500" alt="freedrive demo"></p>
 
 ```python
 import time
@@ -128,6 +138,8 @@ arm.disable()
 ```
 
 ### 多路点轨迹 + blending
+
+<p align="center"><img src="docs/assets/blending.gif" width="500" alt="blending demo"></p>
 
 ```python
 from onero_sdk import Arm, TrajectoryPlanner, Waypoint
@@ -303,6 +315,8 @@ arm.disable()
 ```
 
 ### 高级轨迹规划
+
+<p align="center"><img src="docs/assets/trajectory_profiles.gif" width="500" alt="trajectory profiles demo"></p>
 
 ```python
 from onero_sdk import Arm, TrapezoidalProfile, RuckigPlanner, TimeOptimalPlanner
