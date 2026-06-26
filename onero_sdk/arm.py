@@ -659,7 +659,8 @@ class Arm:
     # ─── Real-time Control (non-blocking, single frame) ──────────────────────
 
     def servoj(self, joints: list[float],
-               kp: Optional[float] = None, kd: Optional[float] = None) -> ArmState:
+               kp: Optional[float] = None, kd: Optional[float] = None,
+               tau_ff: Optional[list[float]] = None) -> ArmState:
         """
         Send a single joint-space target (real-time control).
 
@@ -668,8 +669,10 @@ class Arm:
 
         Args:
             joints: Target angles for each joint (rad).
-            kp: Position gain (default from model).
-            kd: Damping gain (default from model).
+            kp: Position gain (default from model). Set to 0 for pure torque mode.
+            kd: Damping gain (default from model). Set to 0 for pure torque mode.
+            tau_ff: Feedforward torques (Nm). Added to PD output.
+                    If None, gravity compensation is used.
 
         Returns:
             Current arm state from feedback.
@@ -683,13 +686,16 @@ class Arm:
         if len(joints) != n:
             raise OneroConfigError(f"Expected {n} joints, got {len(joints)}")
 
-        g = self._gravity_torques(list(self._state.joints))
+        if tau_ff is not None:
+            torques = list(tau_ff)
+        else:
+            torques = self._gravity_torques(list(self._state.joints))
         self._state = self._safe_backend.command(
             positions=joints,
             velocities=[0.0] * n,
             kps=[kp] * n,
             kds=[kd] * n,
-            torques=g,
+            torques=torques,
         )
         self._recorder.record_frame(
             self._state.joints, self._state.velocities, self._state.torques)

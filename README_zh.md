@@ -257,7 +257,7 @@ x_error = x_desired - x_current   # 6D 位姿误差
 dx_error = dx_desired - dx_current # 6D 速度误差
 F = Kp @ x_error + Kd @ dx_error
 tau = J.T @ F + np.array(g)
-arm.command(tau_ff=tau.tolist(), kp=0, kd=0)
+arm.servoj(arm.state.joints, kp=0, kd=0, tau_ff=tau.tolist())
 ```
 
 ### 动力学参数标定
@@ -515,12 +515,6 @@ with CanBus("can0") as bus:
     state = motor.set_mit(position=1.0, kp=50.0, kd=1.0)
     motor.disable()
 ```
-
-## 协议说明（与 DM4310 的差异）
-
-1. **反馈字节0**：onero 使用 `(ERR<<4) | ID`，DM4310 使用 `(ID<<4) | ERR`
-2. **Get/Set ID**：onero 使用 1 字节 ID（DLC=4），DM4310 使用 2 字节 ID
-3. **Kp 范围**：[0, 500]，**Kd 范围**：[0, 5] — 固定值
 
 ## 依赖
 

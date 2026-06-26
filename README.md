@@ -257,7 +257,7 @@ x_error = x_desired - x_current   # 6D pose error
 dx_error = dx_desired - dx_current # 6D velocity error
 F = Kp @ x_error + Kd @ dx_error
 tau = J.T @ F + np.array(g)
-arm.command(tau_ff=tau.tolist(), kp=0, kd=0)
+arm.servoj(arm.state.joints, kp=0, kd=0, tau_ff=tau.tolist())
 ```
 
 ### Dynamics calibration
@@ -516,12 +516,6 @@ with CanBus("can0") as bus:
     state = motor.set_mit(position=1.0, kp=50.0, kd=1.0)
     motor.disable()
 ```
-
-## Protocol Notes (vs DM4310)
-
-1. **Feedback byte 0**: onero uses `(ERR<<4) | ID`, DM4310 uses `(ID<<4) | ERR`
-2. **Get/Set ID**: onero uses 1-byte IDs (DLC=4), DM4310 uses 2-byte IDs
-3. **Kp range**: [0, 500], **Kd range**: [0, 5] — fixed
 
 ## Dependencies
 
