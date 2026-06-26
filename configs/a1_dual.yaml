@@ -1,0 +1,8 @@
+# Dual A1 arm configuration
+left:
+  model: "A1"
+  channel: "can0"
+
+right:
+  model: "A1"
+  channel: "can1"

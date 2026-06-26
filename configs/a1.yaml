@@ -1,0 +1,17 @@
+# Single A1 arm configuration
+model: "A1"
+channel: "can0"
+
+# Control gains (optional — defaults from model registry)
+# kp: 50.0
+# kd: 1.0
+
+# URDF for FK/IK (optional — required for movel/movep/servop)
+# urdf: "onero_description/urdf/A1/a1_l.urdf"
+
+# Safety limits (optional — defaults active)
+# safety:
+#   max_velocity: 5.0        # rad/s per joint
+#   max_delta_per_step: 0.03 # rad per control step
+#   timeout_frames: 10       # consecutive missed frames before e-stop
+#   enabled: true

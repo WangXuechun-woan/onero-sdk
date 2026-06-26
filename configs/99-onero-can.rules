@@ -1,0 +1,29 @@
+# udev rules for onero A1S CAN adapters.
+# Allows non-root users to access the serial devices and manage CAN interfaces.
+#
+# Install:
+#   sudo cp 99-onero-can.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#
+# After installing, add your user to the "dialout" and "plugdev" groups:
+#   sudo usermod -aG dialout,plugdev $USER
+#   (log out and back in for group changes to take effect)
+#
+# Note: Adjust idVendor/idProduct if your USB-CAN adapter differs.
+# Common adapters:
+#   CANable / candleLight: 1d50:606f
+#   PEAK PCAN-USB:         0c72:000c
+#   Inno-Maker USB2CAN:    1d50:606f
+#   ZLG USBCAN:            04d8:0053
+
+# --- CANable / candleLight (gs_usb) ---
+SUBSYSTEM=="usb", ATTR{idVendor}=="1d50", ATTR{idProduct}=="606f", MODE="0666", GROUP="plugdev"
+
+# --- SLCAN serial devices (ttyACM*) ---
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", MODE="0666", GROUP="dialout", SYMLINK+="onero_can_%n"
+
+# --- Allow non-root CAN interface management ---
+# This requires the net_admin capability. Add to your systemd service or use:
+#   sudo setcap cap_net_admin+ep $(which slcand)
+#   sudo setcap cap_net_admin+ep $(which ip)
