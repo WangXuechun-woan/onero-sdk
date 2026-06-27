@@ -171,62 +171,61 @@ def demo_movej():
 
 
 def demo_movel():
-    """movel: straight-line motion with trail showing linearity."""
+    """movel: straight-line motion via SDK Arm.movel (Cartesian IK)."""
     print("Generating movel.gif...")
     backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
     renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
-    backend.enable()
 
+    from onero_sdk import Arm
+    arm = Arm("A1", backend=backend)
+    arm.enable()
+
+    model = backend._model
+    data = backend._data
     n = backend.num_joints
-    dt = 0.005
+    ee_body = 7
 
-    # Move to a start pose first, then do a "straight line" in Cartesian
-    init_pose = [0.2, -0.4, 0.0, -0.6, 0.0, 0.2, 0.0]
-    profiles = run_profiles(backend, [0.0]*n, init_pose, dt, duration=1.0)
-    for step in range(len(profiles[0])):
-        pos = [profiles[i][min(step, len(profiles[i])-1)].position for i in range(n)]
-        vel = [profiles[i][min(step, len(profiles[i])-1)].velocity for i in range(n)]
-        backend.command(pos, vel, [80.0]*n, [2.0]*n, [0.0]*n)
+    # Move to a start pose
+    arm.movej([0.2, -0.5, 0.0, -0.8, 0.0, 0.2, 0.0], duration=1.0)
 
-    # Now trace a straight line by interpolating EE position
-    # We'll use small joint increments that approximate a line
-    # The trail will show if it's straight
-    waypoints = [
-        [0.2, -0.4, 0.0, -0.6, 0.0, 0.2, 0.0],
-        [0.4, -0.6, 0.1, -0.9, 0.1, 0.3, 0.0],
-        [0.6, -0.8, 0.2, -1.2, 0.2, 0.4, 0.0],
-    ]
+    # Get start EE position
+    start_ee = data.xpos[ee_body].copy()
 
+    # Target: move ~12cm diagonally (produces a clear straight line)
+    target_ee = start_ee + np.array([0.08, -0.05, 0.08])
+    pose_6d = np.concatenate([target_ee, [0, 0, 0]])
+
+    # Intercept command calls to collect trail + render frames
     frames = []
     trail = []
-    render_every = max(1, int(1.0 / (FPS * dt)))
-    step_counter = 0
+    render_every = max(1, int(1.0 / (FPS * 0.005)))
+    step_counter = [0]
+    original_command = backend.command
 
-    for seg in range(len(waypoints) - 1):
-        profiles = multi_joint_trapezoidal(
-            waypoints[seg], waypoints[seg + 1], [1.5]*n, [4.0]*n, dt,
-            target_duration=2.0)
-        for step in range(len(profiles[0])):
-            pos = [profiles[i][min(step, len(profiles[i])-1)].position for i in range(n)]
-            vel = [profiles[i][min(step, len(profiles[i])-1)].velocity for i in range(n)]
-            backend.command(pos, vel, [80.0]*n, [2.0]*n, [0.0]*n)
-            trail.append(get_ee_pos(backend._data))
-            step_counter += 1
-            if step_counter % render_every == 0:
-                img = render_scene(renderer, backend._model, backend._data,
-                                   trail_points=trail,
-                                   trail_color=[0.0, 1.0, 0.0, 1.0])
-                frames.append(img)
+    def tracking_command(*args, **kwargs):
+        result = original_command(*args, **kwargs)
+        trail.append(data.xpos[ee_body].copy())
+        step_counter[0] += 1
+        if step_counter[0] % render_every == 0:
+            img = render_scene(renderer, model, data,
+                               trail_points=trail,
+                               trail_color=[0.0, 1.0, 0.0, 1.0])
+            frames.append(img)
+        return result
 
-    # Hold with trail visible
-    for _ in range(int(FPS * 0.8)):
-        img = render_scene(renderer, backend._model, backend._data,
+    backend.command = tracking_command
+    arm.movel(position=pose_6d, duration=2.5)
+    backend.command = original_command
+
+    # Hold with full trail visible
+    for _ in range(int(FPS * 1.0)):
+        img = render_scene(renderer, model, data,
                            trail_points=trail,
                            trail_color=[0.0, 1.0, 0.0, 1.0])
         frames.append(img)
 
     save_gif(frames, 'movel.gif')
-    backend.close()
+    arm.disable()
     renderer.close()
 
 
