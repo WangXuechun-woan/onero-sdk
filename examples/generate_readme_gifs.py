@@ -538,22 +538,22 @@ def demo_freedrive():
     # Phase 1: Freedrive (teach) — record while "human" drags the arm
     current_seg[0] = 0
     n = arm.num_joints
-    damping = 0.5
-    teach_duration = 3.0
+    damping = 0.8
+    teach_duration = 3.5
     steps = int(teach_duration / backend._control_dt)
 
     arm.start_recording()
 
     for step in range(steps):
         t = step * backend._control_dt
-        # Simulate human pushing via body-level force on Link5/Link7
+        # Gentle forces to produce smooth trajectory (stays within rate limits at 2x)
         backend._data.xfrc_applied[5] = [
-            2.0 * math.sin(2 * math.pi * 0.25 * t),
-            1.5 * math.sin(2 * math.pi * 0.2 * t),
-            1.0 * math.cos(2 * math.pi * 0.15 * t), 0, 0, 0]
+            1.2 * math.sin(2 * math.pi * 0.2 * t),
+            0.8 * math.sin(2 * math.pi * 0.15 * t),
+            0.6 * math.cos(2 * math.pi * 0.12 * t), 0, 0, 0]
         backend._data.xfrc_applied[7] = [
-            1.0 * math.sin(2 * math.pi * 0.3 * t + 2.0),
-            0, 0.8 * math.cos(2 * math.pi * 0.2 * t), 0, 0, 0]
+            0.6 * math.sin(2 * math.pi * 0.25 * t + 2.0),
+            0, 0.5 * math.cos(2 * math.pi * 0.18 * t), 0, 0, 0]
 
         q = list(backend._data.qpos[:n])
         g = arm.gravity_torque()
@@ -562,15 +562,30 @@ def demo_freedrive():
     backend._data.xfrc_applied[:] = 0
     recording = arm.stop_recording()
 
+    # Fix timestamps: in non-realtime sim, wall-clock is compressed.
+    # Rescale to actual simulation time (control_dt per frame).
+    from onero_sdk.trajectory import Recording, RecordedFrame
+    fixed_frames = []
+    for i, f in enumerate(recording.frames):
+        fixed_frames.append(RecordedFrame(
+            timestamp=i * backend._control_dt,
+            joints=f.joints, velocities=f.velocities, torques=f.torques,
+        ))
+    recording = Recording(fixed_frames)
+
     # Phase 2: Replay at 1x speed (green trail)
     current_seg[0] = 1
+    rec.stop()
     arm.movej(start_pose, duration=1.0)
-    arm.replay(recording, speed_factor=1.0)
+    rec.start()
+    arm.replay(recording, speed_factor=1.0, kp=120.0, kd=2.0)
 
     # Phase 3: Replay at 2x speed (cyan trail)
     current_seg[0] = 2
+    rec.stop()
     arm.movej(start_pose, duration=1.0)
-    arm.replay(recording, speed_factor=2.0)
+    rec.start()
+    arm.replay(recording, speed_factor=2.0, kp=120.0, kd=2.0)
 
     rec.stop()
     rec.hold_frame(1.0)
@@ -581,16 +596,34 @@ def demo_freedrive():
 
 
 def demo_speed_control():
-    """speedj — constant velocity with acceleration ramp."""
+    """speedj + speedl — joint velocity (arc) vs Cartesian velocity (straight line).
+
+    Shows the difference: speedj produces an arc at EE (joint-space velocity),
+    while speedl produces a straight line (Cartesian-space velocity).
+    """
     print("Generating speedj.gif...")
     backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
     renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
     arm = Arm("A1", backend=backend)
     arm.enable()
 
-    rec = TrailRecorder(backend, renderer, trail_color=[0.0, 1.0, 0.8, 1.0])
+    # Track current segment color
+    current_color = [None]
+    color_cyan = [0.0, 1.0, 0.8, 1.0]
+    color_yellow = [1.0, 1.0, 0.0, 1.0]
+    current_color[0] = color_cyan
+
+    rec = TrailRecorder(backend, renderer,
+                        trail_colors_fn=lambda: list(current_color[0]))
     rec.start()
+
+    # Phase 1: speedj — joint velocity produces arc at EE (cyan)
     arm.speedj([0.0, 0.5, 0.0, -0.3, 0.0, 0.2, 0.0], acceleration=1.0, duration=3.0)
+
+    # Phase 2: speedl — Cartesian velocity produces straight line (yellow)
+    current_color[0] = color_yellow
+    arm.speedl([0.0, 0.0, -0.08, 0.0, 0.0, 0.0], acceleration=0.5, duration=2.5)
+
     rec.stop()
     rec.hold_frame(0.5)
 
