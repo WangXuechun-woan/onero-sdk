@@ -54,7 +54,7 @@ def render_scene(renderer, model, data, trail_points=None,
     if cam_lookat is None:
         cam_lookat = [0.0, 0.0, 0.3]
     if trail_color is None:
-        trail_color = [1.0, 0.2, 0.2, 0.9]
+        trail_color = [1.0, 1.0, 0.0, 1.0]
 
     camera = mujoco.MjvCamera()
     camera.type = mujoco.mjtCamera.mjCAMERA_FREE
@@ -83,18 +83,16 @@ def render_scene(renderer, model, data, trail_points=None,
                 break
             idx = scene.ngeom
             scene.ngeom += 1
-            g = scene.geoms[idx]
-            g.type = mujoco.mjtGeom.mjGEOM_SPHERE
-            g.size[:] = [0.006, 0, 0]
-            g.pos[:] = pt
-            if colors:
-                g.rgba[:] = colors[k]
-            else:
-                g.rgba[:] = trail_color
-            g.dataid = -1
-            g.objtype = 0
-            g.objid = -1
-            g.category = 4  # mjCAT_DECOR
+            color = colors[k] if colors else trail_color
+            mujoco.mjv_initGeom(
+                scene.geoms[idx],
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=[0.012, 0.012, 0.012],
+                pos=np.asarray(pt, dtype=np.float64),
+                mat=np.eye(3).flatten(),
+                rgba=np.asarray(color, dtype=np.float32),
+            )
+            scene.geoms[idx].emission = 1.0
 
     return renderer.render().copy()
 
@@ -217,14 +215,14 @@ def demo_movel():
             if step_counter % render_every == 0:
                 img = render_scene(renderer, backend._model, backend._data,
                                    trail_points=trail,
-                                   trail_color=[0.2, 0.8, 0.2, 0.9])
+                                   trail_color=[0.0, 1.0, 0.0, 1.0])
                 frames.append(img)
 
     # Hold with trail visible
     for _ in range(int(FPS * 0.8)):
         img = render_scene(renderer, backend._model, backend._data,
                            trail_points=trail,
-                           trail_color=[0.2, 0.8, 0.2, 0.9])
+                           trail_color=[0.0, 1.0, 0.0, 1.0])
         frames.append(img)
 
     save_gif(frames, 'movel.gif')
@@ -261,7 +259,7 @@ def demo_servo_sine():
         if step % render_every == 0:
             img = render_scene(renderer, backend._model, backend._data,
                                trail_points=trail,
-                               trail_color=[0.2, 0.5, 1.0, 0.8])
+                               trail_color=[0.0, 0.5, 1.0, 1.0])
             frames.append(img)
 
     save_gif(frames, 'servo_sine.gif')
@@ -303,7 +301,7 @@ def demo_movec():
         if step % render_every == 0:
             img = render_scene(renderer, backend._model, backend._data,
                                trail_points=trail,
-                               trail_color=[1.0, 0.6, 0.0, 0.9])
+                               trail_color=[1.0, 0.7, 0.0, 1.0])
             frames.append(img)
 
     save_gif(frames, 'movec.gif')
@@ -341,7 +339,7 @@ def demo_freedrive():
         if step % render_every == 0:
             img = render_scene(renderer, backend._model, backend._data,
                                trail_points=trail,
-                               trail_color=[0.8, 0.4, 0.9, 0.7])
+                               trail_color=[1.0, 0.3, 1.0, 1.0])
             frames.append(img)
 
     save_gif(frames, 'freedrive.gif')
@@ -382,7 +380,7 @@ def demo_speed_control():
         if step % render_every == 0:
             img = render_scene(renderer, backend._model, backend._data,
                                trail_points=trail,
-                               trail_color=[0.2, 0.8, 0.6, 0.8])
+                               trail_color=[0.0, 1.0, 0.8, 1.0])
             frames.append(img)
 
     save_gif(frames, 'speedj.gif')
@@ -416,11 +414,11 @@ def demo_blending():
     ]
 
     seg_colors = [
-        [0.2, 0.7, 0.2, 0.9],   # green (line)
-        [1.0, 0.4, 0.1, 0.9],   # orange (arc)
-        [0.2, 0.4, 1.0, 0.9],   # blue (arc)
-        [0.9, 0.2, 0.7, 0.9],   # pink (curve)
-        [0.5, 0.5, 0.5, 0.7],   # gray (return)
+        [0.0, 1.0, 0.0, 1.0],   # neon green (line)
+        [1.0, 0.5, 0.0, 1.0],   # bright orange (arc)
+        [0.0, 0.8, 1.0, 1.0],   # cyan (arc)
+        [1.0, 0.0, 1.0, 1.0],   # magenta (curve)
+        [1.0, 1.0, 0.0, 1.0],   # yellow (return)
     ]
 
     frames = []
@@ -493,14 +491,14 @@ def demo_trajectory_profiles():
         if step % render_every == 0:
             img = render_scene(renderer, backend._model, backend._data,
                                trail_points=trail,
-                               trail_color=[0.2, 0.7, 0.2, 0.8])
+                               trail_color=[0.0, 1.0, 0.0, 1.0])
             frames.append(img)
 
     # Hold
     for _ in range(int(FPS * 0.5)):
         img = render_scene(renderer, backend._model, backend._data,
                            trail_points=trail,
-                           trail_color=[0.2, 0.7, 0.2, 0.8])
+                           trail_color=[0.0, 1.0, 0.0, 1.0])
         frames.append(img)
 
     save_gif(frames, 'trajectory_profiles.gif')
@@ -535,7 +533,7 @@ def demo_force_mode():
         if step % render_every == 0:
             img = render_scene(renderer, backend._model, backend._data,
                                trail_points=trail,
-                               trail_color=[1.0, 0.5, 0.0, 0.8])
+                               trail_color=[1.0, 0.7, 0.0, 1.0])
             frames.append(img)
 
     # Phase 2: force control (compliant push)
@@ -553,7 +551,7 @@ def demo_force_mode():
         if step % render_every == 0:
             img = render_scene(renderer, backend._model, backend._data,
                                trail_points=trail,
-                               trail_color=[1.0, 0.5, 0.0, 0.8])
+                               trail_color=[1.0, 0.7, 0.0, 1.0])
             frames.append(img)
 
     save_gif(frames, 'force_mode.gif')
@@ -641,7 +639,7 @@ def demo_impedance():
         if step % render_every == 0:
             img = render_scene(renderer, backend._model, backend._data,
                                trail_points=trail,
-                               trail_color=[0.5, 0.2, 1.0, 0.7])
+                               trail_color=[0.7, 0.3, 1.0, 1.0])
             frames.append(img)
 
     save_gif(frames, 'impedance.gif')
