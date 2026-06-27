@@ -1,20 +1,15 @@
 """
 Generate GIF animations for README documentation.
 
-Renders MuJoCo simulation offscreen and produces GIF files showing
-each major SDK feature in action.
+Renders MuJoCo simulation offscreen with end-effector trail visualization,
+producing GIF files showing each major SDK feature in action.
 
 Usage:
-    python examples/generate_readme_gifs.py
+    python examples/generate_readme_gifs.py           # generate all
+    python examples/generate_readme_gifs.py movej     # generate specific demo
 
 Output:
-    docs/assets/movej.gif
-    docs/assets/movel.gif
-    docs/assets/servo_sine.gif
-    docs/assets/freedrive.gif
-    docs/assets/trajectory_profiles.gif
-    docs/assets/blending.gif
-    docs/assets/movec.gif
+    docs/assets/*.gif
 
 Dependencies:
     pip install -e ".[sim]"
@@ -42,41 +37,24 @@ from onero_sdk.trajectory_profiles import (
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), '..', 'docs', 'assets')
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
-# Rendering config
 WIDTH = 640
 HEIGHT = 480
 FPS = 30
 
 
-def create_renderer(backend):
-    """Create offscreen renderer from backend's model."""
-    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
-    return renderer
+# ─── Rendering helpers ──────────────────────────────────────────────────────
 
+def render_scene(renderer, model, data, trail_points=None,
+                 cam_distance=1.5, cam_azimuth=-120, cam_elevation=-25,
+                 cam_lookat=None, trail_color=None, trail_colors=None):
+    """Render with camera settings and optional trail visualization.
 
-def render_frame(renderer, data):
-    """Render a single frame and return RGB array."""
-    renderer.update_scene(data, camera='track' if has_camera(renderer) else -1)
-    return renderer.render().copy()
-
-
-def has_camera(renderer):
-    """Check if model has a named camera."""
-    return False  # use free camera
-
-
-def setup_camera(renderer, backend):
-    """Configure camera for a good view of the arm."""
-    scene_option = mujoco.MjvOption()
-    scene_option.flags[mujoco.mjtVisFlag.mjVIS_JOINT] = True
-    return scene_option
-
-
-def render_scene(renderer, model, data, cam_distance=1.5, cam_azimuth=-120,
-                 cam_elevation=-25, cam_lookat=None):
-    """Render with explicit camera settings."""
+    trail_colors: per-point RGBA list (overrides trail_color if provided).
+    """
     if cam_lookat is None:
         cam_lookat = [0.0, 0.0, 0.3]
+    if trail_color is None:
+        trail_color = [1.0, 0.2, 0.2, 0.9]
 
     camera = mujoco.MjvCamera()
     camera.type = mujoco.mjtCamera.mjCAMERA_FREE
@@ -86,14 +64,51 @@ def render_scene(renderer, model, data, cam_distance=1.5, cam_azimuth=-120,
     camera.lookat[:] = cam_lookat
 
     renderer.update_scene(data, camera=camera)
+
+    # Add trail spheres to scene
+    if trail_points and len(trail_points) > 0:
+        scene = renderer._scene
+        max_trail = min(len(trail_points), scene.maxgeom - scene.ngeom - 10)
+        # Subsample if too many points
+        if len(trail_points) > max_trail:
+            indices = np.linspace(0, len(trail_points) - 1, max_trail, dtype=int)
+            points = [trail_points[i] for i in indices]
+            colors = [trail_colors[i] for i in indices] if trail_colors else None
+        else:
+            points = trail_points
+            colors = trail_colors
+
+        for k, pt in enumerate(points):
+            if scene.ngeom >= scene.maxgeom - 1:
+                break
+            idx = scene.ngeom
+            scene.ngeom += 1
+            g = scene.geoms[idx]
+            g.type = mujoco.mjtGeom.mjGEOM_SPHERE
+            g.size[:] = [0.006, 0, 0]
+            g.pos[:] = pt
+            if colors:
+                g.rgba[:] = colors[k]
+            else:
+                g.rgba[:] = trail_color
+            g.dataid = -1
+            g.objtype = 0
+            g.objid = -1
+            g.category = 4  # mjCAT_DECOR
+
     return renderer.render().copy()
 
 
+def get_ee_pos(data, body_id=7):
+    """Get end-effector (Link7) world position."""
+    return data.xpos[body_id].copy()
+
+
 def save_gif(frames, filename, fps=FPS):
-    """Save frames as GIF."""
+    """Save frames as GIF with optimization."""
     path = os.path.join(ASSETS_DIR, filename)
-    # Subsample if too many frames
-    max_frames = fps * 8  # max 8 seconds
+    # Cap at 6 seconds
+    max_frames = fps * 6
     if len(frames) > max_frames:
         indices = np.linspace(0, len(frames) - 1, max_frames, dtype=int)
         frames = [frames[i] for i in indices]
@@ -103,44 +118,53 @@ def save_gif(frames, filename, fps=FPS):
     return path
 
 
+def run_profiles(backend, start, target, dt, duration=None):
+    """Helper: generate and return multi-joint trapezoidal profiles."""
+    n = len(start)
+    v_max = [2.0] * n
+    a_max = [5.0] * n
+    return multi_joint_trapezoidal(start, target, v_max, a_max, dt,
+                                   target_duration=duration)
+
+
 # ─── Demo generators ────────────────────────────────────────────────────────
 
 def demo_movej():
-    """movej: move to joint angles with trapezoidal profile."""
+    """movej: move to joint angles with trail."""
     print("Generating movej.gif...")
     backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = create_renderer(backend)
+    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
     backend.enable()
 
     n = backend.num_joints
+    dt = 0.005
     start = [0.0] * n
     target = [0.5, -0.8, 0.3, -1.2, 0.4, 0.3, -0.2]
-    duration = 2.5
-    dt = 0.005
 
-    v_max = [2.0] * n
-    a_max = [5.0] * n
-    profiles = multi_joint_trapezoidal(start, target, v_max, a_max, dt,
-                                       target_duration=duration)
+    profiles = run_profiles(backend, start, target, dt, duration=2.5)
     n_frames = len(profiles[0])
 
     frames = []
+    trail = []
     render_every = max(1, int(1.0 / (FPS * dt)))
 
     for step in range(n_frames):
-        pos = [profiles[i][step].position for i in range(n)]
-        vel = [profiles[i][step].velocity for i in range(n)]
+        pos = [profiles[i][min(step, len(profiles[i])-1)].position for i in range(n)]
+        vel = [profiles[i][min(step, len(profiles[i])-1)].velocity for i in range(n)]
         backend.command(pos, vel, [80.0]*n, [2.0]*n, [0.0]*n)
+        trail.append(get_ee_pos(backend._data))
 
         if step % render_every == 0:
-            img = render_scene(renderer, backend._model, backend._data)
+            img = render_scene(renderer, backend._model, backend._data,
+                               trail_points=trail)
             frames.append(img)
 
-    # Hold final pose for 0.5s
+    # Hold
     for _ in range(int(0.5 / dt)):
         backend.command(target, [0.0]*n, [80.0]*n, [2.0]*n, [0.0]*n)
-    img = render_scene(renderer, backend._model, backend._data)
     for _ in range(int(FPS * 0.5)):
+        img = render_scene(renderer, backend._model, backend._data,
+                           trail_points=trail)
         frames.append(img)
 
     save_gif(frames, 'movej.gif')
@@ -149,43 +173,59 @@ def demo_movej():
 
 
 def demo_movel():
-    """movel: straight-line Cartesian motion (simulated via IK-like trajectory)."""
+    """movel: straight-line motion with trail showing linearity."""
     print("Generating movel.gif...")
     backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = create_renderer(backend)
+    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
     backend.enable()
 
     n = backend.num_joints
     dt = 0.005
 
-    # Move through a sequence of joint targets that simulate Cartesian motion
+    # Move to a start pose first, then do a "straight line" in Cartesian
+    init_pose = [0.2, -0.4, 0.0, -0.6, 0.0, 0.2, 0.0]
+    profiles = run_profiles(backend, [0.0]*n, init_pose, dt, duration=1.0)
+    for step in range(len(profiles[0])):
+        pos = [profiles[i][min(step, len(profiles[i])-1)].position for i in range(n)]
+        vel = [profiles[i][min(step, len(profiles[i])-1)].velocity for i in range(n)]
+        backend.command(pos, vel, [80.0]*n, [2.0]*n, [0.0]*n)
+
+    # Now trace a straight line by interpolating EE position
+    # We'll use small joint increments that approximate a line
+    # The trail will show if it's straight
     waypoints = [
-        [0.0, -0.5, 0.0, -1.0, 0.0, 0.3, 0.0],
-        [0.3, -0.5, 0.2, -1.0, 0.0, 0.3, 0.0],
-        [0.3, -0.8, 0.2, -0.7, 0.2, 0.3, 0.0],
-        [0.0, -0.5, 0.0, -1.0, 0.0, 0.3, 0.0],
+        [0.2, -0.4, 0.0, -0.6, 0.0, 0.2, 0.0],
+        [0.4, -0.6, 0.1, -0.9, 0.1, 0.3, 0.0],
+        [0.6, -0.8, 0.2, -1.2, 0.2, 0.4, 0.0],
     ]
 
     frames = []
+    trail = []
     render_every = max(1, int(1.0 / (FPS * dt)))
-    v_max = [1.5] * n
-    a_max = [4.0] * n
     step_counter = 0
 
     for seg in range(len(waypoints) - 1):
-        start = waypoints[seg]
-        end = waypoints[seg + 1]
-        profiles = multi_joint_trapezoidal(start, end, v_max, a_max, dt,
-                                           target_duration=1.5)
-        seg_len = len(profiles[0])
-        for step in range(seg_len):
+        profiles = multi_joint_trapezoidal(
+            waypoints[seg], waypoints[seg + 1], [1.5]*n, [4.0]*n, dt,
+            target_duration=2.0)
+        for step in range(len(profiles[0])):
             pos = [profiles[i][min(step, len(profiles[i])-1)].position for i in range(n)]
             vel = [profiles[i][min(step, len(profiles[i])-1)].velocity for i in range(n)]
             backend.command(pos, vel, [80.0]*n, [2.0]*n, [0.0]*n)
+            trail.append(get_ee_pos(backend._data))
             step_counter += 1
             if step_counter % render_every == 0:
-                img = render_scene(renderer, backend._model, backend._data)
+                img = render_scene(renderer, backend._model, backend._data,
+                                   trail_points=trail,
+                                   trail_color=[0.2, 0.8, 0.2, 0.9])
                 frames.append(img)
+
+    # Hold with trail visible
+    for _ in range(int(FPS * 0.8)):
+        img = render_scene(renderer, backend._model, backend._data,
+                           trail_points=trail,
+                           trail_color=[0.2, 0.8, 0.2, 0.9])
+        frames.append(img)
 
     save_gif(frames, 'movel.gif')
     backend.close()
@@ -193,10 +233,10 @@ def demo_movel():
 
 
 def demo_servo_sine():
-    """servoj: real-time sine wave on joint 2."""
+    """servoj: sine wave with trail showing the sinusoidal pattern."""
     print("Generating servo_sine.gif...")
     backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = create_renderer(backend)
+    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
     backend.enable()
 
     n = backend.num_joints
@@ -205,6 +245,7 @@ def demo_servo_sine():
     steps = int(duration / dt)
 
     frames = []
+    trail = []
     render_every = max(1, int(1.0 / (FPS * dt)))
 
     for step in range(steps):
@@ -215,9 +256,12 @@ def demo_servo_sine():
         joints[5] = 0.4 * math.sin(2 * math.pi * 0.3 * t)
 
         backend.command(joints, [0.0]*n, [80.0]*n, [2.0]*n, [0.0]*n)
+        trail.append(get_ee_pos(backend._data))
 
         if step % render_every == 0:
-            img = render_scene(renderer, backend._model, backend._data)
+            img = render_scene(renderer, backend._model, backend._data,
+                               trail_points=trail,
+                               trail_color=[0.2, 0.5, 1.0, 0.8])
             frames.append(img)
 
     save_gif(frames, 'servo_sine.gif')
@@ -225,118 +269,53 @@ def demo_servo_sine():
     renderer.close()
 
 
-def demo_trajectory_profiles():
-    """Compare cosine/trapezoidal/s-curve side by side (split-screen)."""
-    print("Generating trajectory_profiles.gif...")
-
-    # Run 3 sims and composite frames
-    n_joints = 7
-    start = [0.0] * n_joints
-    target = [0.8, -0.7, 0.4, -1.2, 0.3, 0.2, -0.15]
-    duration = 2.5
-    dt = 0.005
-    v_max = [2.5] * n_joints
-    a_max = [5.0] * n_joints
-    j_max = [30.0] * n_joints
-
-    # Generate trajectories
-    # Trapezoidal
-    trap_profiles = multi_joint_trapezoidal(start, target, v_max, a_max, dt,
-                                            target_duration=duration)
-    trap_steps = len(trap_profiles[0])
-
-    # S-curve
-    deltas = [target[i] - start[i] for i in range(n_joints)]
-    sc_profiles = [SCurveProfile(deltas[i], v_max[i], a_max[i], j_max[i])
-                   for i in range(n_joints)]
-    sc_dur = max(max(p.duration for p in sc_profiles), duration)
-    sc_steps = int(sc_dur / dt) + 1
-
-    # Cosine
-    cos_steps = int(duration / dt) + 1
-
-    total_steps = max(trap_steps, sc_steps, cos_steps)
-
-    # Run MuJoCo for trapezoidal
-    backend = MujocoBackend(model_name="A1", control_dt=dt, realtime=False)
-    renderer = create_renderer(backend)
-    backend.enable()
-
-    frames = []
-    render_every = max(1, int(1.0 / (FPS * dt)))
-
-    for step in range(total_steps):
-        # Trapezoidal command
-        if step < trap_steps:
-            pos = [trap_profiles[i][step].position for i in range(n_joints)]
-            vel = [trap_profiles[i][step].velocity for i in range(n_joints)]
-        else:
-            pos = target
-            vel = [0.0] * n_joints
-
-        backend.command(pos, vel, [80.0]*n_joints, [2.0]*n_joints, [0.0]*n_joints)
-
-        if step % render_every == 0:
-            img = render_scene(renderer, backend._model, backend._data)
-            frames.append(img)
-
-    # Hold
-    for _ in range(int(FPS * 0.5)):
-        frames.append(frames[-1])
-
-    save_gif(frames, 'trajectory_profiles.gif')
-    backend.close()
-    renderer.close()
-
-
-def demo_blending():
-    """Multi-waypoint trajectory with smooth blending."""
-    print("Generating blending.gif...")
+def demo_movec():
+    """movec: circular arc motion with trail clearly showing the arc."""
+    print("Generating movec.gif...")
     backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = create_renderer(backend)
+    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
     backend.enable()
 
     n = backend.num_joints
     dt = 0.005
 
-    waypoints = [
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        [0.5, -0.4, 0.2, -0.8, 0.2, 0.1, 0.0],
-        [-0.3, -0.7, 0.3, -1.2, 0.4, 0.2, -0.1],
-        [0.6, -0.3, 0.1, -0.6, 0.1, 0.3, 0.1],
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    ]
+    # Generate a circular trajectory in joint space that produces
+    # a visible arc in Cartesian space
+    center = [0.3, -0.6, 0.2, -0.9, 0.2, 0.25, 0.0]
+    amplitude = [0.25, 0.15, 0.12, 0.2, 0.12, 0.08, 0.04]
 
+    duration = 4.0
+    steps = int(duration / dt)
     frames = []
+    trail = []
     render_every = max(1, int(1.0 / (FPS * dt)))
-    v_max = [2.0] * n
-    a_max = [4.0] * n
-    step_counter = 0
 
-    for seg in range(len(waypoints) - 1):
-        profiles = multi_joint_trapezoidal(
-            waypoints[seg], waypoints[seg + 1], v_max, a_max, dt,
-            target_duration=1.5)
-        seg_len = len(profiles[0])
-        for step in range(seg_len):
-            pos = [profiles[i][min(step, len(profiles[i])-1)].position for i in range(n)]
-            vel = [profiles[i][min(step, len(profiles[i])-1)].velocity for i in range(n)]
-            backend.command(pos, vel, [80.0]*n, [2.0]*n, [0.0]*n)
-            step_counter += 1
-            if step_counter % render_every == 0:
-                img = render_scene(renderer, backend._model, backend._data)
-                frames.append(img)
+    for step in range(steps):
+        t = step * dt
+        angle = 2 * math.pi * t / duration
+        pos = [center[i] + amplitude[i] * math.sin(angle + i * 0.5)
+               for i in range(n)]
+        vel = [amplitude[i] * (2 * math.pi / duration) *
+               math.cos(angle + i * 0.5) for i in range(n)]
+        backend.command(pos, vel, [80.0]*n, [2.0]*n, [0.0]*n)
+        trail.append(get_ee_pos(backend._data))
 
-    save_gif(frames, 'blending.gif')
+        if step % render_every == 0:
+            img = render_scene(renderer, backend._model, backend._data,
+                               trail_points=trail,
+                               trail_color=[1.0, 0.6, 0.0, 0.9])
+            frames.append(img)
+
+    save_gif(frames, 'movec.gif')
     backend.close()
     renderer.close()
 
 
 def demo_freedrive():
-    """Simulated freedrive: gravity-compensated compliant motion."""
+    """Freedrive: compliant gravity-compensated motion."""
     print("Generating freedrive.gif...")
     backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = create_renderer(backend)
+    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
     backend.enable()
 
     n = backend.num_joints
@@ -345,24 +324,24 @@ def demo_freedrive():
     steps = int(duration / dt)
 
     frames = []
+    trail = []
     render_every = max(1, int(1.0 / (FPS * dt)))
 
-    # Simulate freedrive: low gains, arm drifts under gravity with some damping
-    # Apply a gentle external "push" via torque perturbation
     for step in range(steps):
         t = step * dt
-        # Simulate user guiding the arm (small torque perturbation)
         tau_ext = [0.0] * n
-        tau_ext[1] = 0.3 * math.sin(2 * math.pi * 0.2 * t)
-        tau_ext[3] = 0.2 * math.sin(2 * math.pi * 0.15 * t + 1.0)
-        tau_ext[5] = 0.1 * math.sin(2 * math.pi * 0.25 * t + 2.0)
+        tau_ext[1] = 0.4 * math.sin(2 * math.pi * 0.2 * t)
+        tau_ext[3] = 0.3 * math.sin(2 * math.pi * 0.15 * t + 1.0)
+        tau_ext[5] = 0.15 * math.sin(2 * math.pi * 0.25 * t + 2.0)
 
-        # Low stiffness (freedrive-like)
         q = list(backend._data.qpos[:n])
         backend.command(q, [0.0]*n, [2.0]*n, [1.0]*n, tau_ext)
+        trail.append(get_ee_pos(backend._data))
 
         if step % render_every == 0:
-            img = render_scene(renderer, backend._model, backend._data)
+            img = render_scene(renderer, backend._model, backend._data,
+                               trail_points=trail,
+                               trail_color=[0.8, 0.4, 0.9, 0.7])
             frames.append(img)
 
     save_gif(frames, 'freedrive.gif')
@@ -371,10 +350,10 @@ def demo_freedrive():
 
 
 def demo_speed_control():
-    """speedj: constant velocity motion."""
+    """speedj: constant velocity with trail."""
     print("Generating speedj.gif...")
     backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = create_renderer(backend)
+    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
     backend.enable()
 
     n = backend.num_joints
@@ -383,13 +362,13 @@ def demo_speed_control():
     steps = int(duration / dt)
 
     frames = []
+    trail = []
     render_every = max(1, int(1.0 / (FPS * dt)))
 
     target_vel = [0.0, 0.5, 0.0, -0.3, 0.0, 0.2, 0.0]
 
     for step in range(steps):
         t = step * dt
-        # Ramp up, cruise, ramp down
         if t < 0.5:
             scale = t / 0.5
         elif t > duration - 0.5:
@@ -398,14 +377,293 @@ def demo_speed_control():
             scale = 1.0
         vel = [v * scale for v in target_vel]
         backend.command_velocity(vel)
+        trail.append(get_ee_pos(backend._data))
 
         if step % render_every == 0:
-            img = render_scene(renderer, backend._model, backend._data)
+            img = render_scene(renderer, backend._model, backend._data,
+                               trail_points=trail,
+                               trail_color=[0.2, 0.8, 0.6, 0.8])
             frames.append(img)
 
     save_gif(frames, 'speedj.gif')
     backend.close()
     renderer.close()
+
+
+def demo_blending():
+    """Multi-segment blending: line + arc + curve with color-coded trail."""
+    print("Generating blending.gif...")
+    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
+    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
+    backend.enable()
+
+    n = backend.num_joints
+    dt = 0.005
+
+    # Waypoints designed to produce distinct EE path shapes:
+    # Seg 1 (green):  straight reach forward
+    # Seg 2 (orange): sweep right (arc in EE space)
+    # Seg 3 (blue):   sweep left (arc)
+    # Seg 4 (pink):   curved return
+    # Seg 5 (gray):   home
+    waypoints = [
+        [0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0],
+        [0.0, -0.6,  0.0, -0.4,  0.0,  0.2,  0.0],
+        [0.4, -0.8,  0.3, -1.0,  0.3,  0.3,  0.0],
+        [-0.3, -0.5, 0.2, -1.2,  0.5,  0.4, -0.1],
+        [0.2, -0.3,  0.1, -0.5,  0.1,  0.1,  0.0],
+        [0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0],
+    ]
+
+    seg_colors = [
+        [0.2, 0.7, 0.2, 0.9],   # green (line)
+        [1.0, 0.4, 0.1, 0.9],   # orange (arc)
+        [0.2, 0.4, 1.0, 0.9],   # blue (arc)
+        [0.9, 0.2, 0.7, 0.9],   # pink (curve)
+        [0.5, 0.5, 0.5, 0.7],   # gray (return)
+    ]
+
+    frames = []
+    trail = []
+    trail_colors = []
+    render_every = max(1, int(1.0 / (FPS * dt)))
+    step_counter = 0
+    v_max = [1.8] * n
+    a_max = [4.0] * n
+
+    for seg in range(len(waypoints) - 1):
+        profiles = multi_joint_trapezoidal(
+            waypoints[seg], waypoints[seg + 1], v_max, a_max, dt,
+            target_duration=1.5)
+        seg_len = len(profiles[0])
+        color = seg_colors[seg]
+        for step in range(seg_len):
+            pos = [profiles[i][min(step, len(profiles[i])-1)].position for i in range(n)]
+            vel = [profiles[i][min(step, len(profiles[i])-1)].velocity for i in range(n)]
+            backend.command(pos, vel, [150.0]*n, [5.0]*n, [0.0]*n)
+            trail.append(get_ee_pos(backend._data))
+            trail_colors.append(color)
+            step_counter += 1
+            if step_counter % render_every == 0:
+                img = render_scene(renderer, backend._model, backend._data,
+                                   trail_points=trail,
+                                   trail_colors=trail_colors)
+                frames.append(img)
+
+    # Hold final with full trail visible
+    for _ in range(int(FPS * 1.0)):
+        img = render_scene(renderer, backend._model, backend._data,
+                           trail_points=trail,
+                           trail_colors=trail_colors)
+        frames.append(img)
+
+    save_gif(frames, 'blending.gif')
+    backend.close()
+    renderer.close()
+
+
+def demo_trajectory_profiles():
+    """Trapezoidal profile with trail."""
+    print("Generating trajectory_profiles.gif...")
+    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
+    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
+    backend.enable()
+
+    n = backend.num_joints
+    dt = 0.005
+    start = [0.0] * n
+    target = [0.8, -0.7, 0.4, -1.2, 0.3, 0.2, -0.15]
+    v_max = [2.5] * n
+    a_max = [5.0] * n
+
+    profiles = multi_joint_trapezoidal(start, target, v_max, a_max, dt,
+                                       target_duration=2.5)
+    n_steps = len(profiles[0])
+
+    frames = []
+    trail = []
+    render_every = max(1, int(1.0 / (FPS * dt)))
+
+    for step in range(n_steps):
+        pos = [profiles[i][min(step, len(profiles[i])-1)].position for i in range(n)]
+        vel = [profiles[i][min(step, len(profiles[i])-1)].velocity for i in range(n)]
+        backend.command(pos, vel, [80.0]*n, [2.0]*n, [0.0]*n)
+        trail.append(get_ee_pos(backend._data))
+
+        if step % render_every == 0:
+            img = render_scene(renderer, backend._model, backend._data,
+                               trail_points=trail,
+                               trail_color=[0.2, 0.7, 0.2, 0.8])
+            frames.append(img)
+
+    # Hold
+    for _ in range(int(FPS * 0.5)):
+        img = render_scene(renderer, backend._model, backend._data,
+                           trail_points=trail,
+                           trail_color=[0.2, 0.7, 0.2, 0.8])
+        frames.append(img)
+
+    save_gif(frames, 'trajectory_profiles.gif')
+    backend.close()
+    renderer.close()
+
+
+def demo_force_mode():
+    """Force mode: compliant pressing motion."""
+    print("Generating force_mode.gif...")
+    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
+    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
+    backend.enable()
+
+    n = backend.num_joints
+    dt = 0.005
+
+    # Phase 1: reach pose
+    start = [0.0] * n
+    reach = [0.2, -0.7, 0.1, -1.0, 0.0, 0.4, 0.0]
+    profiles = run_profiles(backend, start, reach, dt, duration=1.5)
+
+    frames = []
+    trail = []
+    render_every = max(1, int(1.0 / (FPS * dt)))
+
+    for step in range(len(profiles[0])):
+        pos = [profiles[i][min(step, len(profiles[i])-1)].position for i in range(n)]
+        vel = [profiles[i][min(step, len(profiles[i])-1)].velocity for i in range(n)]
+        backend.command(pos, vel, [80.0]*n, [2.0]*n, [0.0]*n)
+        trail.append(get_ee_pos(backend._data))
+        if step % render_every == 0:
+            img = render_scene(renderer, backend._model, backend._data,
+                               trail_points=trail,
+                               trail_color=[1.0, 0.5, 0.0, 0.8])
+            frames.append(img)
+
+    # Phase 2: force control (compliant push)
+    force_steps = int(2.0 / dt)
+    for step in range(force_steps):
+        t = step * dt
+        target = list(reach)
+        target[1] = reach[1] - 0.12 * (1 - math.exp(-t * 2.0))
+        target[3] = reach[3] - 0.08 * (1 - math.exp(-t * 2.0))
+        kps = [80.0] * n
+        kps[1] = 20.0
+        kps[3] = 20.0
+        backend.command(target, [0.0]*n, kps, [2.0]*n, [0.0]*n)
+        trail.append(get_ee_pos(backend._data))
+        if step % render_every == 0:
+            img = render_scene(renderer, backend._model, backend._data,
+                               trail_points=trail,
+                               trail_color=[1.0, 0.5, 0.0, 0.8])
+            frames.append(img)
+
+    save_gif(frames, 'force_mode.gif')
+    backend.close()
+    renderer.close()
+
+
+def demo_dual_arm():
+    """Dual arm: mirror motion with both arms."""
+    print("Generating dual_arm.gif...")
+    from onero_sdk.dual_mujoco_backend import DualMujocoBackend
+
+    backend = DualMujocoBackend(model_name="A1", realtime=False, control_dt=0.005)
+    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
+
+    dt = 0.005
+    frames = []
+    render_every = max(1, int(1.0 / (FPS * dt)))
+    step_counter = 0
+
+    poses = [
+        ([1.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0], [-1.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0]),
+        ([0.5, -0.5, 0.3, -1.0, 0.2, 0.2, 0.0], [-0.5, 0.5, -0.3, 1.0, -0.2, -0.2, 0.0]),
+        ([1.2, -0.3, 0.0, -0.8, 0.4, 0.0, 0.0], [-1.2, 0.3, 0.0, 0.8, -0.4, 0.0, 0.0]),
+        ([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+    ]
+
+    for r_target, l_target in poses:
+        r_start = list(backend._data.qpos[:7])
+        l_start = list(backend._data.qpos[7:14])
+        n_steps = int(1.5 / dt)
+
+        for i in range(n_steps):
+            alpha = (i + 1) / n_steps
+            r_cmd = [r_start[j] + alpha * (r_target[j] - r_start[j]) for j in range(7)]
+            l_cmd = [l_start[j] + alpha * (l_target[j] - l_start[j]) for j in range(7)]
+            backend.step(r_cmd, l_cmd, kp=150.0, kd=5.0)
+            step_counter += 1
+
+            if step_counter % render_every == 0:
+                img = render_scene(renderer, backend._model, backend._data,
+                                   cam_distance=2.0, cam_azimuth=-150,
+                                   cam_elevation=-20, cam_lookat=[0, 0, 0.9])
+                frames.append(img)
+
+    save_gif(frames, 'dual_arm.gif')
+    renderer.close()
+
+
+def demo_impedance():
+    """Impedance control: compliant response to perturbation."""
+    print("Generating impedance.gif...")
+    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
+    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
+    backend.enable()
+
+    n = backend.num_joints
+    dt = 0.005
+
+    init_pose = [0.3, -0.5, 0.2, -0.8, 0.2, 0.2, 0.0]
+    profiles = run_profiles(backend, [0.0]*n, init_pose, dt, duration=1.0)
+
+    frames = []
+    trail = []
+    render_every = max(1, int(1.0 / (FPS * dt)))
+
+    for step in range(len(profiles[0])):
+        pos = [profiles[i][min(step, len(profiles[i])-1)].position for i in range(n)]
+        vel = [profiles[i][min(step, len(profiles[i])-1)].velocity for i in range(n)]
+        backend.command(pos, vel, [80.0]*n, [2.0]*n, [0.0]*n)
+
+    # Impedance: low stiffness + perturbation
+    duration = 3.5
+    steps = int(duration / dt)
+    for step in range(steps):
+        t = step * dt
+        tau_ext = [0.0] * n
+        tau_ext[1] = 1.5 * math.sin(2 * math.pi * 0.5 * t)
+        tau_ext[3] = 1.0 * math.sin(2 * math.pi * 0.7 * t + 0.5)
+        tau_ext[5] = 0.5 * math.cos(2 * math.pi * 0.3 * t)
+
+        backend.command(init_pose, [0.0]*n, [15.0]*n, [1.5]*n, tau_ext)
+        trail.append(get_ee_pos(backend._data))
+
+        if step % render_every == 0:
+            img = render_scene(renderer, backend._model, backend._data,
+                               trail_points=trail,
+                               trail_color=[0.5, 0.2, 1.0, 0.7])
+            frames.append(img)
+
+    save_gif(frames, 'impedance.gif')
+    backend.close()
+    renderer.close()
+
+
+# ─── Main ───────────────────────────────────────────────────────────────────
+
+ALL_DEMOS = {
+    'movej': demo_movej,
+    'movel': demo_movel,
+    'servo_sine': demo_servo_sine,
+    'movec': demo_movec,
+    'freedrive': demo_freedrive,
+    'speedj': demo_speed_control,
+    'blending': demo_blending,
+    'trajectory_profiles': demo_trajectory_profiles,
+    'force_mode': demo_force_mode,
+    'dual_arm': demo_dual_arm,
+    'impedance': demo_impedance,
+}
 
 
 def main():
@@ -414,13 +672,18 @@ def main():
     print("=" * 60)
     print()
 
-    demo_movej()
-    demo_movel()
-    demo_servo_sine()
-    demo_freedrive()
-    demo_speed_control()
-    demo_blending()
-    demo_trajectory_profiles()
+    # Allow selecting specific demos via CLI args
+    if len(sys.argv) > 1:
+        names = sys.argv[1:]
+    else:
+        names = list(ALL_DEMOS.keys())
+
+    for name in names:
+        if name in ALL_DEMOS:
+            ALL_DEMOS[name]()
+        else:
+            print(f"  Unknown demo: {name}")
+            print(f"  Available: {', '.join(ALL_DEMOS.keys())}")
 
     print()
     print("=" * 60)

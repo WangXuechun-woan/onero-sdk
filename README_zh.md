@@ -156,6 +156,8 @@ with Arm("A1", channel="can0") as arm:
 
 ### 力控模式（混合力/位置）
 
+<p align="center"><img src="docs/assets/force_mode.gif" width="500" alt="force mode demo"></p>
+
 ```python
 import time
 from onero_sdk import Arm
@@ -182,6 +184,8 @@ finally:
 ```
 
 ### 圆弧运动（movec）
+
+<p align="center"><img src="docs/assets/movec.gif" width="500" alt="movec demo"></p>
 
 ```python
 from onero_sdk import Arm
@@ -245,6 +249,8 @@ print(f"力: {wrench[:3]}, 力矩: {wrench[3:]}")
 ```
 
 ### 动力学原语（雅可比、重力补偿、科氏力）
+
+<p align="center"><img src="docs/assets/impedance.gif" width="500" alt="impedance control demo"></p>
 
 ```python
 import numpy as np
@@ -363,6 +369,8 @@ backend.movej(r_forward, l_forward, duration=2.0)
 ```
 
 ### 双臂控制
+
+<p align="center"><img src="docs/assets/dual_arm.gif" width="500" alt="dual arm demo"></p>
 
 ```python
 from onero_sdk import DualArm
