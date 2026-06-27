@@ -382,8 +382,8 @@ class Arm:
 
                 def _frames():
                     for step in range(num_frames):
-                        positions = [joint_profiles[i][step].position for i in range(n)]
-                        velocities = [joint_profiles[i][step].velocity for i in range(n)]
+                        positions = [joint_profiles[i][min(step, len(joint_profiles[i])-1)].position for i in range(n)]
+                        velocities = [joint_profiles[i][min(step, len(joint_profiles[i])-1)].velocity for i in range(n)]
                         if use_adaptive:
                             kps, kds = self._compute_gains(positions)
                         else:
@@ -613,6 +613,7 @@ class Arm:
         total_angle = geometry.signed_arc_angle(v0, p2 - center, normal, p1 - center)
 
         def _frames():
+            prev_joints = None
             for step in range(steps + 1):
                 t = step / steps
                 alpha = 0.5 * (1.0 - math.cos(math.pi * t))
@@ -633,12 +634,18 @@ class Arm:
                 q = ik.solve(interp_pos, interp_rot, dt=dt)
                 joints = q.tolist() if hasattr(q, 'tolist') else list(q)
 
+                if prev_joints is not None:
+                    velocities = [(joints[i] - prev_joints[i]) / dt for i in range(n)]
+                else:
+                    velocities = [0.0] * n
+                prev_joints = list(joints)
+
                 if use_adaptive:
                     kps, kds = self._compute_gains(joints)
                 else:
                     kps, kds = [kp] * n, [kd] * n
                 yield MotionFrame(
-                    positions=joints, velocities=[0.0] * n,
+                    positions=joints, velocities=velocities,
                     kps=kps, kds=kds, torques=[0.0] * n, dt=dt,
                 )
 
