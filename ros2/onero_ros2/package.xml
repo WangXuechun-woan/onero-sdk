@@ -3,23 +3,21 @@
 <package format="3">
   <name>onero_ros2</name>
   <version>0.1.0</version>
-  <description>ROS2 Control hardware interface for Onero robot arms</description>
+  <description>ROS2 driver for Onero robot arms (standalone node + MoveIt2 compatible)</description>
   <maintainer email="dev@onerobot.com">Onero Robotics</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
 
   <depend>rclpy</depend>
-  <depend>hardware_interface</depend>
-  <depend>controller_manager</depend>
-  <depend>joint_state_broadcaster</depend>
-  <depend>joint_trajectory_controller</depend>
+  <depend>sensor_msgs</depend>
+  <depend>control_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>robot_state_publisher</depend>
   <depend>xacro</depend>
   <depend>launch</depend>
   <depend>launch_ros</depend>
-
-  <exec_depend>onero-sdk</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

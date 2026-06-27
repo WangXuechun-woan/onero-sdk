@@ -1,12 +1,17 @@
-# OMPL Planning Pipeline configuration
-planning_plugin: ompl_interface/OMPLPlanner
-request_adapters: >-
-  default_planner_request_adapters/AddTimeOptimalParameterization
-  default_planner_request_adapters/ResolveConstraintFrames
-  default_planner_request_adapters/FixWorkspaceBounds
-  default_planner_request_adapters/FixStartStateBounds
-  default_planner_request_adapters/FixStartStateCollision
-  default_planner_request_adapters/FixStartStatePathConstraints
+# OMPL Planning Pipeline configuration (ROS2 Jazzy compatible)
+planning_plugins:
+  - ompl_interface/OMPLPlanner
+
+request_adapters:
+  - default_planning_request_adapters/ResolveConstraintFrames
+  - default_planning_request_adapters/ValidateWorkspaceBounds
+  - default_planning_request_adapters/CheckStartStateBounds
+  - default_planning_request_adapters/CheckStartStateCollision
+
+response_adapters:
+  - default_planning_response_adapters/AddTimeOptimalParameterization
+  - default_planning_response_adapters/ValidateSolution
+
 start_state_max_bounds_error: 0.1
 
 planner_configs:
@@ -19,12 +24,6 @@ planner_configs:
   PRM:
     type: geometric::PRM
     max_nearest_neighbors: 10
-  BiTRRT:
-    type: geometric::BiTRRT
-    range: 0.0
-    temp_change_factor: 0.1
-    frountier_threshold: 0.0
-    init_temperature: 100
 
 arm:
   default_planner_config: RRTConnect
@@ -32,6 +31,5 @@ arm:
     - RRTConnect
     - RRTstar
     - PRM
-    - BiTRRT
   projection_evaluator: joints(joint1-a1_r, joint2-a1_r)
   longest_valid_segment_fraction: 0.005

@@ -1,4 +1,7 @@
-"""Launch MoveIt2 move_group for Onero A1 arm."""
+"""Launch MoveIt2 move_group for Onero A1 arm.
+
+Prerequisites: ros2 launch onero_ros2 bringup.launch.py (or fake.launch.py)
+"""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -12,10 +15,9 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     use_fake_hardware_arg = DeclareLaunchArgument(
         "use_fake_hardware", default_value="false",
-        description="Use mock hardware for testing without robot",
     )
 
-    # Robot description from onero_ros2 package
+    # Robot description (same xacro as bringup)
     robot_description_content = Command([
         PathJoinSubstitution([FindExecutable(name="xacro")]),
         " ",
@@ -28,60 +30,41 @@ def generate_launch_description():
     robot_description = {"robot_description": robot_description_content}
 
     # SRDF
-    robot_description_semantic_content = Command([
-        "cat ",
-        PathJoinSubstitution([
-            FindPackageShare("onero_moveit_config"), "config", "a1.srdf",
-        ]),
+    srdf_file = PathJoinSubstitution([
+        FindPackageShare("onero_moveit_config"), "config", "a1.srdf",
     ])
     robot_description_semantic = {
-        "robot_description_semantic": robot_description_semantic_content,
+        "robot_description_semantic": Command(["cat ", srdf_file]),
     }
 
-    # MoveIt config files
+    # Config file paths
     moveit_config_pkg = FindPackageShare("onero_moveit_config")
-
-    kinematics_yaml = PathJoinSubstitution([
-        moveit_config_pkg, "config", "kinematics.yaml",
-    ])
-    ompl_planning_yaml = PathJoinSubstitution([
-        moveit_config_pkg, "config", "ompl_planning.yaml",
-    ])
-    moveit_controllers_yaml = PathJoinSubstitution([
-        moveit_config_pkg, "config", "moveit_controllers.yaml",
-    ])
-    joint_limits_yaml = PathJoinSubstitution([
-        moveit_config_pkg, "config", "joint_limits.yaml",
-    ])
-
-    # MoveIt parameters
-    moveit_config = [
-        robot_description,
-        robot_description_semantic,
-        kinematics_yaml,
-        ompl_planning_yaml,
-        moveit_controllers_yaml,
-        joint_limits_yaml,
-        {"use_sim_time": False},
-    ]
+    kinematics_yaml = PathJoinSubstitution([moveit_config_pkg, "config", "kinematics.yaml"])
+    ompl_planning_yaml = PathJoinSubstitution([moveit_config_pkg, "config", "ompl_planning.yaml"])
+    moveit_controllers_yaml = PathJoinSubstitution([moveit_config_pkg, "config", "moveit_controllers.yaml"])
+    joint_limits_yaml = PathJoinSubstitution([moveit_config_pkg, "config", "joint_limits.yaml"])
 
     # move_group node
     move_group_node = Node(
         package="moveit_ros_move_group",
         executable="move_group",
         output="screen",
-        parameters=moveit_config,
+        parameters=[
+            robot_description,
+            robot_description_semantic,
+            kinematics_yaml,
+            ompl_planning_yaml,
+            moveit_controllers_yaml,
+            joint_limits_yaml,
+            {"use_sim_time": False},
+        ],
     )
 
-    # RViz with MoveIt plugin
-    rviz_config = PathJoinSubstitution([
-        moveit_config_pkg, "config", "moveit.rviz",
-    ])
+    # RViz (no custom config — use MoveIt defaults)
     rviz_node = Node(
         package="rviz2",
         executable="rviz2",
         output="log",
-        arguments=["-d", rviz_config],
         parameters=[
             robot_description,
             robot_description_semantic,
