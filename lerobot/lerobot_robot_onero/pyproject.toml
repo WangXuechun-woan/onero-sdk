@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot_robot_onero"
+version = "0.1.0"
+description = "Onero A1 robot arm integration for LeRobot"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "lerobot",
+    "onero-sdk",
+]
+
+[project.optional-dependencies]
+cameras = ["opencv-python"]
+
+[tool.setuptools.packages.find]
+include = ["lerobot_robot_onero*"]
