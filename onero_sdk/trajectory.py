@@ -183,9 +183,8 @@ class TrajectoryPlanner:
     """
     Generates smooth multi-segment trajectories with blending.
 
-    Blending uses quintic polynomial interpolation to ensure
-    C² continuity (position, velocity, and acceleration) at transitions.
-    This is the industry-standard approach (ABB, KUKA).
+    Blending uses cubic Hermite interpolation to ensure
+    C¹ continuity (position, velocity) at transitions.
     """
 
     def __init__(self, num_joints: int, control_freq: float):
@@ -203,8 +202,8 @@ class TrajectoryPlanner:
         """
         Pre-compute full trajectory from current position through all waypoints.
 
-        Uses cosine interpolation for main segments and quintic polynomial
-        for blend regions, ensuring C² continuous transitions.
+        Uses cosine interpolation for main segments and cubic Hermite
+        for blend regions, ensuring C¹ continuous transitions.
 
         Returns frame-by-frame targets at control frequency.
         """
@@ -219,6 +218,12 @@ class TrajectoryPlanner:
         for wp in self._waypoints:
             positions.append(list(wp.joints))
 
+        # Validate: replace NaN/Inf with start position
+        for seg in positions:
+            for j in range(n):
+                if not np.isfinite(seg[j]):
+                    seg[j] = start_joints[j] if j < len(start_joints) and np.isfinite(start_joints[j]) else 0.0
+
         for seg_idx, wp in enumerate(self._waypoints):
             start = positions[seg_idx]
             end = positions[seg_idx + 1]
@@ -230,38 +235,40 @@ class TrajectoryPlanner:
             # Non-blend steps: cosine interpolation (smooth S-curve)
             main_steps = max(1, steps - blend_steps)
 
+            # Main segment covers t=[0, t_end] where t_end < 1.0 if blend exists
+            # This ensures non-zero velocity at the handoff point to the blend
+            t_end = main_steps / max(steps, 1) if blend_steps > 0 else 1.0
+            main_duration = wp.duration - wp.blend if blend_steps > 0 else wp.duration
+
             for step in range(main_steps):
-                t = step / max(main_steps - 1, 1)
+                t = step / max(main_steps - 1, 1) * t_end
                 alpha = 0.5 * (1.0 - np.cos(np.pi * t))
                 vel_alpha = (0.5 * np.pi * np.sin(np.pi * t) /
-                             max(wp.duration - wp.blend, dt))
+                             max(main_duration, dt))
                 joints = [start[j] + alpha * (end[j] - start[j]) for j in range(n)]
                 vel = [vel_alpha * (end[j] - start[j]) for j in range(n)]
                 frames.append(TrajectoryFrame(joints=joints, velocities=vel, dt=dt))
 
-            # Blend region: quintic polynomial for C² continuous transition
+            # Blend region: cubic Hermite for C¹ continuous transition
             if blend_steps > 0 and seg_idx < len(self._waypoints) - 1:
                 next_end = positions[seg_idx + 2]
                 blend_dur = wp.blend
                 next_dur = self._waypoints[seg_idx + 1].duration
+
+                # v0 = actual velocity at the end of the main segment (t=t_end)
+                v0_scale = 0.5 * np.pi * np.sin(np.pi * t_end) / max(main_duration, dt)
+                # v1 = 0: next cosine segment starts at t=0 with zero velocity
+                v1_scale = 0.0
 
                 for step in range(blend_steps):
                     t_blend = (step + 1) / blend_steps
                     joints = []
                     vel = []
                     for j in range(n):
-                        # Boundary conditions for quintic
-                        p0 = end[j]  # end of current segment
-                        p1 = end[j]  # start of next segment (same point)
-                        # Velocity at end of current segment
-                        v0 = (0.5 * np.pi / max(wp.duration - wp.blend, dt) *
-                              (end[j] - start[j]))
-                        # Velocity at start of next segment
-                        v1 = (0.5 * np.pi / max(next_dur, dt) *
-                              (next_end[j] - end[j]) *
-                              np.sin(np.pi * 0.0))  # sin(0) = 0 for cosine start
-                        # Use quintic: smooth from v0 to ~v1 direction
-                        # Simplified: cubic Hermite blend
+                        v0 = v0_scale * (end[j] - start[j])
+                        v1 = v1_scale * (next_end[j] - end[j])
+
+                        # Cubic Hermite blend
                         t2 = t_blend * t_blend
                         t3 = t2 * t_blend
                         h00 = 2 * t3 - 3 * t2 + 1
@@ -269,10 +276,14 @@ class TrajectoryPlanner:
                         h01 = -2 * t3 + 3 * t2
                         h11 = t3 - t2
 
-                        p_curr = end[j]
-                        p_next = end[j] + (next_end[j] - end[j]) * (blend_dur / max(next_dur, dt)) * 0.5
+                        # Blend from current segment's exit position to a point along next segment
+                        alpha_end = 0.5 * (1.0 - np.cos(np.pi * t_end))
+                        p_curr = start[j] + alpha_end * (end[j] - start[j])
+                        # Target: where next segment would be after blend_dur
+                        alpha_next = 0.5 * (1.0 - np.cos(np.pi * blend_dur / max(next_dur, dt)))
+                        p_next = end[j] + alpha_next * (next_end[j] - end[j])
                         m0 = v0 * blend_dur
-                        m1 = (next_end[j] - end[j]) / max(next_dur, dt) * blend_dur * 0.5
+                        m1 = v1 * blend_dur
 
                         p_val = h00 * p_curr + h10 * m0 + h01 * p_next + h11 * m1
                         # Velocity from Hermite derivative

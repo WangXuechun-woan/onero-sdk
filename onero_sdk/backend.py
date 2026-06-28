@@ -106,6 +106,18 @@ class ArmBackend(ABC):
         """
         ...
 
+    def command_hold(self, positions: list[float], velocities: list[float],
+                     kps: list[float], kds: list[float],
+                     torques: list[float]) -> ArmState:
+        """
+        Command with joint-limit clamping but NO rate limiting.
+
+        Use when holding current position after velocity motion, or in
+        force_mode/freedrive where the arm is already at the target.
+        Default implementation delegates to command().
+        """
+        return self.command(positions, velocities, kps, kds, torques)
+
     def __enter__(self):
         return self
 

@@ -5,6 +5,8 @@ Supports both left (a1_l) and right (a1_r) arm URDF models.
 Requires: pip install pin pink
 """
 
+import logging
+
 import numpy as np
 
 try:
@@ -15,8 +17,11 @@ except ImportError:
 try:
     import pink
     from pink.tasks import FrameTask
+    from pink.limits import ConfigurationLimit
 except ImportError:
     pink = None
+
+logger = logging.getLogger(__name__)
 
 
 class IKSolver:
@@ -118,6 +123,12 @@ class IKSolver:
             dq = np.linalg.solve(JtJ, J.T @ err)
             q = q + dt * dq
             q = np.clip(q, self._q_min, self._q_max)
+        else:
+            # Loop completed without convergence
+            logger.warning(
+                f"IK did not converge after {max_iter} iterations "
+                f"(pos_err={pos_err:.4f}m, rot_err={rot_err:.4f}rad). "
+                f"Result may be inaccurate.")
 
         self._q = q
         return q
@@ -209,6 +220,7 @@ class PinkIKSolver:
         self._configuration = pink.Configuration(self._model, self._data,
                                                   pin.neutral(self._model))
         self._ee_task = FrameTask(ee_frame, position_cost=1.0, orientation_cost=1.0)
+        self._limits = [ConfigurationLimit(self._model)]
 
     @property
     def nq(self) -> int:
@@ -221,9 +233,23 @@ class PinkIKSolver:
             target_pos
         )
         self._ee_task.set_target(target_se3)
-        velocity = pink.solve_ik(self._configuration, [self._ee_task], dt,
-                                 solver=self._solver)
-        self._configuration.integrate_inplace(velocity, dt)
+        # Multi-step convergence: iterate until close or max steps reached
+        for _ in range(10):
+            velocity = pink.solve_ik(self._configuration, [self._ee_task], dt,
+                                     solver=self._solver, limits=self._limits)
+            self._configuration.integrate_inplace(velocity, dt)
+            # Check convergence
+            pin.forwardKinematics(self._model, self._data, self._configuration.q)
+            pin.updateFramePlacements(self._model, self._data)
+            ee_id = self._model.getFrameId(self._ee_frame)
+            oMf = self._data.oMf[ee_id]
+            pos_err = np.linalg.norm(oMf.translation - target_pos)
+            if target_rot is not None:
+                rot_err = np.linalg.norm(pin.log3(oMf.rotation.T @ target_rot))
+            else:
+                rot_err = 0.0
+            if pos_err < 1e-4 and rot_err < 1e-3:
+                break
         return self._configuration.q
 
     def reset(self, q: np.ndarray):

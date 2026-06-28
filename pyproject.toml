@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onero-sdk"
+version = "0.3.0"
+description = "Python SDK for Onero robotic arms"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    {name = "OneRobotics"},
+]
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+ik = ["pin>=2.7", "pink>=2.0"]
+dynamics = ["pin>=2.7"]
+sim = ["mujoco>=3.0"]
+calibration = ["scipy>=1.10"]
+trajectory = ["ruckig>=0.9", "toppra>=0.6"]
+config = ["pyyaml>=6.0"]
+full = [
+    "pin>=2.7", "pink>=2.0", "mujoco>=3.0",
+    "scipy>=1.10", "ruckig>=0.9", "toppra>=0.6", "pyyaml>=6.0",
+]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+
+[project.urls]
+Repository = "https://github.com/onerobotics/onero-sdk"
+
+[tool.setuptools.packages.find]
+include = ["onero_sdk*"]
+
+[tool.setuptools.package-data]
+onero_sdk = ["urdf/**/*.urdf", "urdf/**/*.stl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"

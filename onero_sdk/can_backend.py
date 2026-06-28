@@ -70,7 +70,7 @@ class CanBackend(ArmBackend):
         self._motors: list[Motor] = []
         self._response_ids: list[int] = []
         for spec in joint_specs:
-            limits = MotorLimits(p_max=spec.p_max, v_max=spec.v_max, t_max=spec.t_max)
+            limits = MotorLimits(p_max=spec.encoding_p_max, v_max=spec.v_max, t_max=spec.t_max)
             motor = Motor(self._bus, spec.can_id, spec.response_id, limits)
             self._motors.append(motor)
             self._response_ids.append(spec.response_id)

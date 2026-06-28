@@ -733,6 +733,19 @@ logging.getLogger("onero_sdk").setLevel(logging.DEBUG)
 
 ## 示例
 
+完整的示例索引和使用场景说明见 **[examples/README.md](examples/README.md)**。
+
+四层使用方式均有覆盖：
+
+| 层级 | 示例 | 说明 |
+|------|------|------|
+| SDK 直接调用 | `examples/01_*.py` ~ `14_*.py` | 从入门到进阶：仿真、运动、力控、伺服、坐标系、手眼标定 |
+| ROS2 | `examples/ros2/` | 话题订阅、服务调用、轨迹执行 |
+| MoveIt | `examples/moveit/` | 关节规划、笛卡尔路径、Pick & Place |
+| LeRobot | `examples/lerobot/` | 遥操作、数据采集、策略推理、跨臂控制 |
+
+其他独立示例：
+
 - `examples/basic_movej.py` — 关节运动
 - `examples/basic_movel.py` — 笛卡尔直线运动
 - `examples/servo_control.py` — 实时 100Hz 伺服循环
@@ -747,4 +760,36 @@ logging.getLogger("onero_sdk").setLevel(logging.DEBUG)
 - `examples/kinematic_calibration_demo.py` — 运动学标定（单点约束法）
 - `examples/trajectory_planning_demo.py` — 轨迹规划对比（梯形、S曲线、Ruckig、TOPP-RA）
 - `examples/mujoco_trajectory_comparison.py` — MuJoCo 轨迹验证（自动化正确性检查）
-- `examples/dual_arm_mujoco_demo.py` — 双臂仿真（人体躯干 + 桌面）
+
+## ROS2 / MoveIt2 / LeRobot 集成
+
+本项目支持三种主流框架集成，详细使用指南如下：
+
+| 框架 | 使用指南 | 适用场景 |
+|------|----------|----------|
+| **ROS2** | [docs/guide_ros2.md](docs/guide_ros2.md) | 多机器人协作、ROS 生态工具链 |
+| **MoveIt2** | [docs/guide_moveit.md](docs/guide_moveit.md) | 碰撞避障、复杂运动规划 |
+| **LeRobot** | [docs/guide_lerobot.md](docs/guide_lerobot.md) | 遥操作、数据采集、AI 策略训练/推理 |
+
+快速启动：
+
+```bash
+# ROS2 — 驱动节点
+cd ros2 && colcon build && source install/setup.bash
+ros2 launch onero_ros2 bringup.launch.py can_channel:=can0
+
+# MoveIt2 — 运动规划
+ros2 launch onero_moveit_config move_group.launch.py
+
+# LeRobot — 遥操作
+pip install -e lerobot/lerobot_robot_onero
+pip install -e lerobot/lerobot_teleoperator_onero
+lerobot-teleoperate --robot.type=onero --robot.can_channel=can0 \
+    --teleop.type=onero_teleop --teleop.leader_channel=can1
+```
+
+详见 [`ros2/onero_ros2/README.md`](ros2/onero_ros2/README.md)。
+
+## 许可证
+
+Apache License 2.0 — 详见 [LICENSE](LICENSE)。

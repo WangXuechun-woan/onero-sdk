@@ -13,6 +13,8 @@ import numpy as np
 def rotvec_to_matrix(rotvec) -> np.ndarray:
     """Convert rotation vector (axis-angle compact form) to 3x3 rotation matrix."""
     rotvec = np.asarray(rotvec, dtype=float)
+    if not np.all(np.isfinite(rotvec)):
+        return np.eye(3)
     angle = np.linalg.norm(rotvec)
     if angle < 1e-10:
         return np.eye(3)
@@ -60,6 +62,11 @@ def ensure_rotation_matrix(rotation) -> np.ndarray:
 
 def slerp_matrix(R0: np.ndarray, R1: np.ndarray, t: float) -> np.ndarray:
     """Spherical linear interpolation between two rotation matrices."""
+    if not np.isfinite(t):
+        return R0.copy()
+    if not np.all(np.isfinite(R0)) or not np.all(np.isfinite(R1)):
+        return R0.copy() if np.all(np.isfinite(R0)) else np.eye(3)
+
     R_delta = R0.T @ R1
     cos_angle = (np.trace(R_delta) - 1) / 2
     cos_angle = np.clip(cos_angle, -1, 1)
@@ -70,10 +77,15 @@ def slerp_matrix(R0: np.ndarray, R1: np.ndarray, t: float) -> np.ndarray:
 
     sin_angle = np.sin(angle)
     if abs(sin_angle) < 1e-6:
-        eigenvalues, eigenvectors = np.linalg.eig(R_delta)
-        idx = np.argmin(np.abs(eigenvalues - 1.0))
-        axis = np.real(eigenvectors[:, idx])
-        axis = axis / (np.linalg.norm(axis) + 1e-12)
+        # Near 0 or pi: extract axis from R_delta + I (robust for 180° case)
+        M = R_delta + np.eye(3)
+        col_norms = [np.linalg.norm(M[:, i]) for i in range(3)]
+        idx = int(np.argmax(col_norms))
+        if col_norms[idx] < 1e-12:
+            axis = np.array([1.0, 0.0, 0.0])
+        else:
+            axis = M[:, idx]
+            axis = axis / np.linalg.norm(axis)
     else:
         skew = (R_delta - R_delta.T) / (2 * sin_angle)
         axis = np.array([skew[2, 1], skew[0, 2], skew[1, 0]])
@@ -94,6 +106,16 @@ def fit_circle_3points(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray):
 
     Returns (center, radius, normal) of the circle's plane.
     """
+    p0 = np.asarray(p0, dtype=float)
+    p1 = np.asarray(p1, dtype=float)
+    p2 = np.asarray(p2, dtype=float)
+
+    if not (np.all(np.isfinite(p0)) and np.all(np.isfinite(p1)) and np.all(np.isfinite(p2))):
+        center = np.zeros(3)
+        radius = 0.0
+        normal = np.array([0.0, 0.0, 1.0])
+        return center, radius, normal
+
     v01 = p1 - p0
     v02 = p2 - p0
     normal = np.cross(v01, v02)
@@ -102,9 +124,13 @@ def fit_circle_3points(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray):
     if norm_len < 1e-10:
         center = (p0 + p2) / 2
         radius = np.linalg.norm(p2 - p0) / 2
-        arbitrary = np.array([1, 0, 0]) if abs(v02[0]) < 0.9 else np.array([0, 1, 0])
-        normal = np.cross(v02, arbitrary)
-        normal = normal / np.linalg.norm(normal)
+        if np.linalg.norm(v02) < 1e-12:
+            normal = np.array([0.0, 0.0, 1.0])
+        else:
+            arbitrary = np.array([1, 0, 0]) if abs(v02[0]) < 0.9 else np.array([0, 1, 0])
+            normal = np.cross(v02, arbitrary)
+            n_len = np.linalg.norm(normal)
+            normal = normal / n_len if n_len > 1e-12 else np.array([0.0, 0.0, 1.0])
         return center, radius, normal
 
     normal = normal / norm_len
@@ -134,6 +160,15 @@ def signed_arc_angle(v0: np.ndarray, v2: np.ndarray,
 
     All vectors are from circle center to points on the circle.
     """
+    v0 = np.asarray(v0, dtype=float)
+    v2 = np.asarray(v2, dtype=float)
+    normal = np.asarray(normal, dtype=float)
+    v1 = np.asarray(v1, dtype=float)
+
+    if not (np.all(np.isfinite(v0)) and np.all(np.isfinite(v2)) and
+            np.all(np.isfinite(normal)) and np.all(np.isfinite(v1))):
+        return 0.0
+
     cos_a = np.dot(v0, v2) / (np.linalg.norm(v0) * np.linalg.norm(v2) + 1e-12)
     cos_a = np.clip(cos_a, -1, 1)
     angle = np.arccos(cos_a)
@@ -142,12 +177,20 @@ def signed_arc_angle(v0: np.ndarray, v2: np.ndarray,
     if np.dot(cross, normal) < 0:
         angle = -angle
 
+    # Handle full-circle case: v0 ≈ v2 but via point is elsewhere
     cos_via = np.dot(v0, v1) / (np.linalg.norm(v0) * np.linalg.norm(v1) + 1e-12)
     cos_via = np.clip(cos_via, -1, 1)
     angle_via = np.arccos(cos_via)
     cross_via = np.cross(v0, v1)
     if np.dot(cross_via, normal) < 0:
         angle_via = -angle_via
+
+    if abs(angle) < 1e-8 and abs(angle_via) > 1e-4:
+        # v0 ≈ v2 but via is different → full circle
+        if np.dot(cross_via, normal) >= 0:
+            return 2 * math.pi
+        else:
+            return -2 * math.pi
 
     if angle > 0:
         if angle_via < 0 or angle_via > angle:

@@ -9,6 +9,7 @@ Install: pip install onero-sdk[dynamics]
 """
 
 import numpy as np
+import threading
 
 try:
     import pinocchio as pin
@@ -48,13 +49,39 @@ class DynamicsModel:
         self._data = self._model.createData()
         self._nq = self._model.nq
         self._ee_frame_id = self._model.nframes - 1
-        self._ee_joint_id = self._model.frames[self._ee_frame_id].parent
-        # Store original last-link inertia for payload reset
+        ee_frame = self._model.frames[self._ee_frame_id]
+        self._ee_joint_id = (ee_frame.parentJoint
+                             if hasattr(ee_frame, 'parentJoint')
+                             else ee_frame.parent)
         self._original_ee_inertia = self._model.inertias[self._ee_joint_id].copy()
+        self._lock = threading.Lock()
 
     @property
     def num_joints(self) -> int:
         return self._nq
+
+    def get_gravity_vector(self) -> np.ndarray:
+        """Return the current gravity acceleration vector in base frame (3D)."""
+        return np.array(self._model.gravity.linear, dtype=float)
+
+    def set_gravity(self, gravity: list[float]) -> None:
+        """
+        Set gravity acceleration vector in base frame coordinates.
+
+        Must be called when the arm is NOT mounted upright (Z-up).
+        Affects all RNEA-based computations: gravity_torques, expected_torques,
+        inverse_dynamics, torque_regressor, and estimate_external_wrench.
+
+        Args:
+            gravity: [gx, gy, gz] acceleration due to gravity in base frame (m/s²).
+                     For upright mounting: [0, 0, -9.81] (default).
+                     For side-mount-left: [0, 9.81, 0].
+        """
+        g = np.asarray(gravity, dtype=float)
+        if g.shape != (3,):
+            raise ValueError(f"gravity must be 3-element vector, got shape {g.shape}")
+        self._model.gravity = pin.Motion(g, np.zeros(3))
+        self._data = self._model.createData()
 
     def set_payload(self, mass: float, cog: list[float]) -> None:
         """
@@ -85,6 +112,17 @@ class DynamicsModel:
         self._model.inertias[self._ee_joint_id] = self._original_ee_inertia.copy()
         self._data = self._model.createData()
 
+    def gravity_torques_no_payload(self, joint_positions: list[float]) -> list[float]:
+        """Compute gravity torques ignoring any configured payload (thread-safe snapshot)."""
+        q = np.asarray(joint_positions, dtype=float)
+        with self._lock:
+            saved = self._model.inertias[self._ee_joint_id].copy()
+            self._model.inertias[self._ee_joint_id] = self._original_ee_inertia.copy()
+            data = self._model.createData()
+            tau = pin.rnea(self._model, data, q, np.zeros(self._nq), np.zeros(self._nq))
+            self._model.inertias[self._ee_joint_id] = saved
+        return tau.tolist()
+
     def gravity_torques(self, joint_positions: list[float]) -> list[float]:
         """
         Compute gravity compensation torques.
@@ -99,16 +137,17 @@ class DynamicsModel:
             Gravity torques per joint (Nm).
         """
         q = np.asarray(joint_positions, dtype=float)
-        if hasattr(self, '_calibrated_params') and self._calibrated_params is not None:
-            Y = pin.computeJointTorqueRegressor(
-                self._model, self._data, q,
-                np.zeros(self._nq), np.zeros(self._nq)
-            )
-            return (Y @ self._calibrated_params).tolist()
-        v = np.zeros(self._nq)
-        a = np.zeros(self._nq)
-        tau = pin.rnea(self._model, self._data, q, v, a)
-        return tau.tolist()
+        with self._lock:
+            if hasattr(self, '_calibrated_params') and self._calibrated_params is not None:
+                Y = pin.computeJointTorqueRegressor(
+                    self._model, self._data, q,
+                    np.zeros(self._nq), np.zeros(self._nq)
+                )
+                return (Y @ self._calibrated_params).tolist()
+            v = np.zeros(self._nq)
+            a = np.zeros(self._nq)
+            tau = pin.rnea(self._model, self._data, q, v, a)
+            return tau.tolist()
 
     def expected_torques(self, joint_positions: list[float],
                          joint_velocities: list[float]) -> list[float]:
@@ -126,8 +165,9 @@ class DynamicsModel:
         """
         q = np.asarray(joint_positions, dtype=float)
         v = np.asarray(joint_velocities, dtype=float)
-        a = np.zeros(self._nq)  # assume zero acceleration (steady state)
-        tau = pin.rnea(self._model, self._data, q, v, a)
+        a = np.zeros(self._nq)
+        with self._lock:
+            tau = pin.rnea(self._model, self._data, q, v, a)
         return tau.tolist()
 
     def torque_residual(self, joint_positions: list[float],
@@ -197,13 +237,35 @@ class DynamicsModel:
             6×n Jacobian matrix. Rows: [vx, vy, vz, wx, wy, wz].
         """
         q = np.asarray(joint_positions, dtype=float)
-        pin.computeJointJacobians(self._model, self._data, q)
-        pin.updateFramePlacements(self._model, self._data)
-        J = pin.getFrameJacobian(
-            self._model, self._data, self._ee_frame_id,
-            pin.ReferenceFrame.LOCAL_WORLD_ALIGNED
-        )
+        with self._lock:
+            pin.computeJointJacobians(self._model, self._data, q)
+            pin.updateFramePlacements(self._model, self._data)
+            J = pin.getFrameJacobian(
+                self._model, self._data, self._ee_frame_id,
+                pin.ReferenceFrame.LOCAL_WORLD_ALIGNED
+            )
         return J
+
+    def ee_position(self, joint_positions: list[float]) -> np.ndarray:
+        """End-effector position (3D) in base frame via FK."""
+        q = np.asarray(joint_positions, dtype=float)
+        with self._lock:
+            pin.forwardKinematics(self._model, self._data, q)
+            pin.updateFramePlacements(self._model, self._data)
+            return self._data.oMf[self._ee_frame_id].translation.copy()
+
+    def ee_pose(self, joint_positions: list[float]) -> tuple[np.ndarray, np.ndarray]:
+        """End-effector pose (position + rotation) in base frame via FK.
+
+        Returns:
+            (position[3], rotation[3x3]) tuple.
+        """
+        q = np.asarray(joint_positions, dtype=float)
+        with self._lock:
+            pin.forwardKinematics(self._model, self._data, q)
+            pin.updateFramePlacements(self._model, self._data)
+            oMf = self._data.oMf[self._ee_frame_id]
+            return oMf.translation.copy(), oMf.rotation.copy()
 
     def jacobian_solve(self, joint_positions: list[float], twist: np.ndarray,
                        lambda_max: float = 0.1,
@@ -254,7 +316,8 @@ class DynamicsModel:
         q = np.asarray(joint_positions, dtype=float)
         v = np.asarray(joint_velocities, dtype=float)
         a = np.asarray(joint_accelerations, dtype=float)
-        tau = pin.rnea(self._model, self._data, q, v, a)
+        with self._lock:
+            tau = pin.rnea(self._model, self._data, q, v, a)
         return tau.tolist()
 
     def mass_matrix(self, joint_positions: list[float]) -> np.ndarray:
@@ -268,7 +331,8 @@ class DynamicsModel:
             n×n symmetric positive-definite mass matrix.
         """
         q = np.asarray(joint_positions, dtype=float)
-        M = pin.crba(self._model, self._data, q)
+        with self._lock:
+            M = pin.crba(self._model, self._data, q)
         return M
 
     def torque_regressor(self, joint_positions: list[float],
@@ -291,7 +355,8 @@ class DynamicsModel:
         q = np.asarray(joint_positions, dtype=float)
         v = np.zeros(self._nq) if joint_velocities is None else np.asarray(joint_velocities, dtype=float)
         a = np.zeros(self._nq) if joint_accelerations is None else np.asarray(joint_accelerations, dtype=float)
-        return pin.computeJointTorqueRegressor(self._model, self._data, q, v, a)
+        with self._lock:
+            return pin.computeJointTorqueRegressor(self._model, self._data, q, v, a)
 
     def get_params(self) -> np.ndarray:
         """

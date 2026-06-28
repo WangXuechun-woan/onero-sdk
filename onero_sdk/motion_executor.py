@@ -94,7 +94,7 @@ class MotionExecutor:
                     state = self._backend.command_velocity(frame.velocities)
             else:
                 if self._gravity_torques_fn:
-                    g = self._gravity_torques_fn(list(state.joints))
+                    g = self._gravity_torques_fn(frame.positions)
                     torques = [t + gt for t, gt in zip(frame.torques, g)]
                 else:
                     torques = frame.torques

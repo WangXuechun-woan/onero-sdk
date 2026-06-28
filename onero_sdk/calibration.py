@@ -35,6 +35,7 @@ class CalibrationResult:
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     friction_coulomb: Optional[np.ndarray] = None
     friction_viscous: Optional[np.ndarray] = None
+    gravity_vector: Optional[list[float]] = None  # gravity used during calibration
 
     def save(self, path: str) -> None:
         data = {
@@ -49,6 +50,8 @@ class CalibrationResult:
             data["friction_coulomb"] = self.friction_coulomb.tolist()
         if self.friction_viscous is not None:
             data["friction_viscous"] = self.friction_viscous.tolist()
+        if self.gravity_vector is not None:
+            data["gravity_vector"] = self.gravity_vector
         with open(path, 'w') as f:
             json.dump(data, f, indent=2)
 
@@ -68,6 +71,7 @@ class CalibrationResult:
             timestamp=data["timestamp"],
             friction_coulomb=fc,
             friction_viscous=fv,
+            gravity_vector=data.get("gravity_vector"),
         )
 
 

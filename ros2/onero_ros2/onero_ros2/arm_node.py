@@ -11,6 +11,7 @@ This approach avoids the ros2_control pluginlib limitation (C++ only)
 while still being compatible with MoveIt2 via FollowJointTrajectory action.
 """
 
+import asyncio
 import threading
 import time
 import numpy as np
@@ -62,6 +63,19 @@ class OneroArmNode(Node):
         self._backend: CanBackend = None
         self._enabled = False
         self._lock = threading.Lock()
+
+        # Optional gravity compensation
+        self._dynamics = None
+        try:
+            from onero_sdk.dynamics import DynamicsModel
+            from onero_sdk.model_registry import _find_urdf
+            urdf_path = _find_urdf(self._model_name)
+            if urdf_path:
+                self._dynamics = DynamicsModel(str(urdf_path))
+                self.get_logger().info("Gravity compensation enabled (pinocchio)")
+        except ImportError:
+            self.get_logger().info(
+                "No gravity compensation (install onero-sdk[dynamics] to enable)")
 
         # State arrays
         self._hw_positions = np.zeros(self._n_joints)
@@ -138,7 +152,7 @@ class OneroArmNode(Node):
     # ─── Control Loop (200Hz) ──────────────────────────────────────────
 
     def _control_loop(self):
-        """Main 200Hz loop: read state, compute command, write, publish."""
+        """Main 200Hz loop: compute command, send, update state from response."""
         while self._running:
             t0 = time.monotonic()
 
@@ -147,32 +161,33 @@ class OneroArmNode(Node):
                     time.sleep(self._control_dt)
                     continue
 
-                # Read state
-                try:
-                    state = self._backend.get_state()
-                    self._hw_positions[:] = state.joints
-                    self._hw_velocities[:] = state.velocities
-                    self._hw_efforts[:] = state.torques
-                except Exception as e:
-                    self.get_logger().error(f"Read failed: {e}")
-                    time.sleep(self._control_dt)
-                    continue
-
                 # Compute command
                 if self._executing_trajectory:
                     self._update_trajectory_command()
 
-                # Write command
+                # Send command and get state from response
                 try:
-                    self._backend.command(
+                    torques_ff = [0.0] * self._n_joints
+                    if self._dynamics:
+                        try:
+                            torques_ff = self._dynamics.gravity_torques(
+                                self._cmd_positions.tolist())
+                        except Exception:
+                            pass
+                    state = self._backend.command(
                         positions=self._cmd_positions.tolist(),
                         velocities=self._cmd_velocities.tolist(),
                         kps=[self._kp] * self._n_joints,
                         kds=[self._kd] * self._n_joints,
-                        torques=[0.0] * self._n_joints,
+                        torques=torques_ff,
                     )
+                    self._hw_positions[:] = state.joints
+                    self._hw_velocities[:] = state.velocities
+                    self._hw_efforts[:] = state.torques
                 except Exception as e:
-                    self.get_logger().error(f"Write failed: {e}")
+                    self.get_logger().error(f"Control cycle failed: {e}")
+                    time.sleep(self._control_dt)
+                    continue
 
             # Publish joint states (outside lock)
             self._publish_joint_state()
@@ -311,9 +326,7 @@ class OneroArmNode(Node):
             feedback.desired.positions = self._cmd_positions[joint_indices].tolist()
             goal_handle.publish_feedback(feedback)
 
-            await rclpy.get_default_context().executor.create_task(
-                lambda: time.sleep(0.05)
-            ) if False else time.sleep(0.05)
+            await asyncio.sleep(0.05)
 
         # Check final error
         final_error = np.abs(

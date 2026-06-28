@@ -5,6 +5,7 @@ Provides velocity clamping, joint limit enforcement, and communication
 timeout detection. Active by default, can be explicitly disabled.
 """
 
+import math
 import time
 import logging
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ class SafetyConfig:
     """Configuration for safety limits."""
     max_velocity: float = 5.0           # rad/s per joint
     max_delta_per_step: float = 0.03    # rad per control step
+    control_freq: float = 200.0         # Hz — control loop frequency
     timeout_frames: int = 10            # consecutive missed frames before emergency stop
     collision_threshold: float = 0.0    # Nm torque residual threshold (0 = disabled)
     collision_stop: bool = True         # whether collision triggers emergency stop
@@ -63,6 +65,11 @@ class SafetyMonitor:
         return self._emergency_stop
 
     @property
+    def max_rate(self) -> float:
+        """Maximum velocity (rad/s) consistent with per-step delta limit at control freq."""
+        return self._config.max_delta_per_step * self._config.control_freq
+
+    @property
     def on_error(self) -> Optional[Callable]:
         return self._on_error
 
@@ -76,6 +83,14 @@ class SafetyMonitor:
             return target
 
         result = np.array(target, dtype=float)
+
+        # Replace NaN/Inf with last known good target (or 0)
+        bad_mask = ~np.isfinite(result)
+        if np.any(bad_mask):
+            if self._last_target is not None:
+                result[bad_mask] = self._last_target[bad_mask]
+            else:
+                result[bad_mask] = 0.0
 
         # Joint position limits
         for i, (p_min, p_max) in enumerate(self._joint_limits):
@@ -94,6 +109,22 @@ class SafetyMonitor:
         self._last_target = result
         return result.tolist()
 
+    def clamp_joint_limits(self, target: list[float]) -> list[float]:
+        """Clamp positions to joint limits only (no rate limiting)."""
+        if not self._config.enabled:
+            return target
+        result = np.array(target, dtype=float)
+        # Replace NaN/Inf with last known good target (or 0)
+        bad_mask = ~np.isfinite(result)
+        if np.any(bad_mask):
+            if self._last_target is not None:
+                result[bad_mask] = self._last_target[bad_mask]
+            else:
+                result[bad_mask] = 0.0
+        for i, (p_min, p_max) in enumerate(self._joint_limits):
+            result[i] = np.clip(result[i], p_min, p_max)
+        return result.tolist()
+
     def reconcile_position(self, measured: list[float]) -> None:
         """
         Reconcile rate limiter baseline with actual measured position.
@@ -105,6 +136,10 @@ class SafetyMonitor:
         if self._last_target is None:
             return
         measured_arr = np.array(measured, dtype=float)
+        # Reject NaN/Inf — keep previous baseline for corrupted joints
+        bad_mask = ~np.isfinite(measured_arr)
+        if np.any(bad_mask):
+            measured_arr[bad_mask] = self._last_target[bad_mask]
         self._last_target = measured_arr
 
     def clamp_velocity(self, velocities: list[float]) -> list[float]:
@@ -112,7 +147,13 @@ class SafetyMonitor:
         if not self._config.enabled:
             return velocities
         limit = self._config.max_velocity
-        return [max(-limit, min(limit, v)) for v in velocities]
+        result = []
+        for v in velocities:
+            if not math.isfinite(v):
+                result.append(0.0)
+            else:
+                result.append(max(-limit, min(limit, v)))
+        return result
 
     def record_response(self, joint_index: int, received: bool) -> None:
         """Record whether a joint responded this cycle."""
@@ -166,6 +207,10 @@ class SafetyMonitor:
     def set_emergency_stop(self) -> None:
         """Programmatically trigger emergency stop from application code."""
         self._emergency_stop = True
+
+    def clear_emergency_stop(self) -> None:
+        """Clear emergency stop flag without resetting other state."""
+        self._emergency_stop = False
 
     def check_collision(self, torque_residuals: list[float]) -> bool:
         """

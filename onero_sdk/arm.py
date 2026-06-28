@@ -7,8 +7,10 @@ whether commands go to real hardware or simulation.
 """
 
 import math
+import atexit
 import logging
 import threading
+import weakref
 from typing import Callable, Optional, Union
 
 import numpy as np
@@ -22,13 +24,21 @@ from .trajectory import Recorder, Recording, TrajectoryFrame, TrajectoryPlanner,
 from . import geometry
 from .clock import ControlClock
 from .motion_executor import MotionExecutor, MotionFrame, VelocityFrame
+from .motion_strategy import (
+    MotionContext, cosine_joint_frames, trapezoidal_joint_frames,
+    scurve_joint_frames, cartesian_linear_frames, circular_arc_frames,
+    velocity_joint_frames, velocity_cartesian_frames,
+)
+from .compliance import ComplianceController
 from .safe_backend import SafeBackend
 from .gain_policy import GainPolicy, Stiffness
+from .arm_transforms import ArmTransformsMixin
+from .mounting import MountingPreset, MountingConfig
 
 logger = logging.getLogger(__name__)
 
 
-class Arm:
+class Arm(ArmTransformsMixin):
     """
     Robotic arm controller (N-DOF, determined by model registry).
 
@@ -46,7 +56,9 @@ class Arm:
                  backend: Optional[ArmBackend] = None,
                  safety: Optional[SafetyConfig] = None,
                  end_effector: Optional[EndEffector] = None,
-                 on_error: Optional[Callable] = None):
+                 on_error: Optional[Callable] = None,
+                 mounting=None,
+                 world_frame: bool = False):
         """
         Args:
             model: Arm model name (e.g. "A1"). Looked up in model registry.
@@ -56,10 +68,19 @@ class Arm:
             safety: Safety configuration. Default limits active if None.
             end_effector: Optional gripper or dexterous hand attached to this arm.
             on_error: Callback invoked on critical errors. Signature: (OneroError) -> None.
+            mounting: Installation orientation. Accepts None (upright/backward-compat),
+                      a MountingPreset enum, a preset string (e.g. "side_mount_left"),
+                      or a MountingConfig instance for fine-tuning.
+            world_frame: If True, all Cartesian APIs (get_pose, movel, servop, speedl,
+                         force_mode, get_external_wrench) operate in world coordinates
+                         (X=forward, Y=left, Z=up) instead of base frame.
         """
         self._model_info = get_model(model)
         self._on_error = on_error
         self._enabled = False
+
+        # Mounting, world-frame, and TCP transforms
+        self._init_transforms(mounting, world_frame)
 
         # Create backend
         if backend is not None and channel is not None:
@@ -80,12 +101,10 @@ class Arm:
         # Safety monitor
         joint_limits = []
         for i, spec in enumerate(self._model_info.joints):
-            p_min = spec.p_min if spec.p_min is not None else -spec.p_max
-            p_max = spec.p_max
-            if p_min > p_max:
+            if spec.p_min > spec.p_max:
                 raise OneroConfigError(
-                    f"Joint {i}: invalid limits p_min={p_min} > p_max={p_max}")
-            joint_limits.append((p_min, p_max))
+                    f"Joint {i}: invalid limits p_min={spec.p_min} > p_max={spec.p_max}")
+            joint_limits.append((spec.p_min, spec.p_max))
         self._safety = SafetyMonitor(
             num_joints=self._model_info.num_joints,
             joint_limits=joint_limits,
@@ -95,7 +114,9 @@ class Arm:
         )
 
         # Wrap backend with safety layer (transparent clamping)
-        self._safe_backend = SafeBackend(self._backend, self._safety)
+        torque_limits = [spec.t_max for spec in self._model_info.joints]
+        self._safe_backend = SafeBackend(self._backend, self._safety,
+                                         torque_limits=torque_limits)
 
         # Cached state
         self._state = ArmState(
@@ -119,6 +140,7 @@ class Arm:
         self._freedrive_active = False
         self._freedrive_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()  # protects _state and backend access
+        self._motion_lock = threading.Lock()  # prevents concurrent motion commands
         self._clock = ControlClock()
 
         # Motion executor (unified control loop — uses safe backend)
@@ -128,7 +150,7 @@ class Arm:
             recorder=self._recorder,
             clock=self._clock,
             get_state=lambda: self._state,
-            set_state=lambda s: setattr(self, '_state', s),
+            set_state=self._set_state_locked,
             gravity_torques_fn=self._gravity_torques,
         )
 
@@ -139,11 +161,39 @@ class Arm:
         self._default_kp = self._model_info.default_kp
         self._default_kd = self._model_info.default_kd
         self._control_freq = self._model_info.control_freq
+
+        # Reflected motor inertia: I_rotor × gear_ratio² per joint
+        self._reflected_inertia = None
+        if self._model_info.gear_ratios and self._model_info.rotor_inertias:
+            import numpy as np
+            ratios = np.array(self._model_info.gear_ratios)
+            rotors = np.array(self._model_info.rotor_inertias)
+            self._reflected_inertia = rotors * (ratios ** 2)
+
         self._gain_policy = GainPolicy(
             stiffness=Stiffness.STIFF,
             fallback_kp=self._default_kp,
             fallback_kd=self._default_kd,
+            dynamics_fn=self._get_dynamics,
+            reflected_inertia=self._reflected_inertia,
+            cache_interval=10,
         )
+
+        # Safety: auto-disable on interpreter exit if user forgets
+        self._atexit_registered = True
+        weakself = weakref.ref(self)
+        def _cleanup():
+            arm = weakself()
+            if arm is not None and arm._enabled:
+                logger.warning(
+                    "Arm was not disabled before exit. "
+                    "Calling disable() automatically. "
+                    "Use 'with Arm(...) as arm:' or try/finally to avoid this.")
+                try:
+                    arm.disable()
+                except Exception:
+                    pass
+        atexit.register(_cleanup)
 
     # ─── Properties ───────────────────────────────────────────────────────────
 
@@ -163,17 +213,20 @@ class Arm:
     @property
     def state(self) -> ArmState:
         """Last known arm state (cached from most recent command/query)."""
-        return self._state
+        with self._lock:
+            return self._state
 
     @property
     def joints(self) -> list[float]:
         """Current joint positions (rad). Shortcut for state.joints."""
-        return self._state.joints
+        with self._lock:
+            return list(self._state.joints)
 
     @property
     def is_moving(self) -> bool:
         """True if any joint velocity exceeds 0.01 rad/s."""
-        return any(abs(v) > 0.01 for v in self._state.velocities)
+        with self._lock:
+            return any(abs(v) > 0.01 for v in self._state.velocities)
 
     @property
     def is_freedrive(self) -> bool:
@@ -213,13 +266,15 @@ class Arm:
         Raises:
             OneroHardwareError: if any joint fails to enable after retry.
         """
-        self._state = self._backend.enable()
+        state = self._backend.enable()
+        with self._lock:
+            self._state = state
         self._enabled = True
-        self._safety.reset(self._state.joints)
+        self._safety.reset(state.joints)
         if self._end_effector is not None:
             self._end_effector.enable()
-        logger.info(f"Arm enabled. Initial joints: {self._state.joints}")
-        return self._state
+        logger.info(f"Arm enabled. Initial joints: {state.joints}")
+        return state
 
     def disable(self) -> None:
         """Disable all joints."""
@@ -256,12 +311,17 @@ class Arm:
 
     def get_state(self) -> ArmState:
         """Actively query current state from hardware."""
-        self._state = self._backend.get_state()
-        return self._state
+        state = self._backend.get_state()
+        with self._lock:
+            self._state = state
+        return state
 
     def get_pose(self) -> tuple[np.ndarray, np.ndarray]:
         """
         Compute current end-effector pose via FK.
+
+        If set_tcp() has been called, returns TCP pose (not flange).
+        If world_frame is enabled, returns pose in world coordinates.
 
         Returns:
             (position [3], rotation_matrix [3x3])
@@ -270,7 +330,10 @@ class Arm:
             OneroConfigError: if URDF not configured for this model.
         """
         fk = self._get_fk()
-        return fk.get_ee_pose(self._state.joints)
+        with self._lock:
+            joints = list(self._state.joints)
+        pos, rot = fk.get_ee_pose(joints)
+        return self._output_pose_transform(pos, rot)
 
     # ─── Planned Motion (blocking) ───────────────────────────────────────────
 
@@ -306,119 +369,82 @@ class Arm:
         self._check_enabled()
         self._check_no_freedrive()
         self._begin_motion()
-        use_adaptive = (kp is None and kd is None)
-        if not use_adaptive:
-            kp = self._default_kp if kp is None else kp
-            kd = self._default_kd if kd is None else kd
-        n = self.num_joints
+        try:
+            use_adaptive = (kp is None and kd is None)
+            if not use_adaptive:
+                kp = self._default_kp if kp is None else kp
+                kd = self._default_kd if kd is None else kd
+            n = self.num_joints
 
-        if len(joints) != n:
-            raise OneroConfigError(f"Expected {n} joints, got {len(joints)}")
+            joints = self._validate_joints(joints)
 
-        start_pos = list(self._state.joints)
-        accel = acceleration if acceleration is not None else 1.4
+            with self._lock:
+                start_pos = list(self._state.joints)
+            accel = acceleration if acceleration is not None else 1.4
 
-        # Resolve profile
-        if profile == 'auto':
-            profile = 'trapezoidal'
+            # Resolve profile
+            if profile == 'auto':
+                profile = 'trapezoidal'
 
-        if duration is None:
-            max_delta = max(abs(joints[i] - start_pos[i]) for i in range(n))
-            if speed is not None:
-                duration = self._duration_from_speed(max_delta, speed, accel)
-            else:
-                duration = max(1.0, max_delta / 1.0)
+            if duration is None:
+                max_delta = max(abs(joints[i] - start_pos[i]) for i in range(n))
+                if speed is not None:
+                    duration = self._duration_from_speed(max_delta, speed, accel)
+                else:
+                    duration = max(1.0, max_delta / 1.0)
 
-        steps = max(1, int(duration * self._control_freq))
-        dt = 1.0 / self._control_freq
+            steps = max(1, int(duration * self._control_freq))
+            dt = 1.0 / self._control_freq
 
-        if profile == 'trapezoidal' or profile == 's_curve':
-            from .trajectory_profiles import (
-                TrapezoidalProfile, SCurveProfile, multi_joint_trapezoidal,
-                compute_synchronized_duration,
+            ctx = MotionContext(
+                start_joints=start_pos, num_joints=n, dt=dt, steps=steps,
+                compute_gains=self._compute_gains if use_adaptive else None,
+                fixed_kp=kp if not use_adaptive else None,
+                fixed_kd=kd if not use_adaptive else None,
             )
-            v_max_per = speed if speed is not None else 2.0
-            v_maxs = [v_max_per] * n
-            a_maxs = [accel] * n
 
-            # Compute synchronized profiles for all joints
-            deltas = [joints[i] - start_pos[i] for i in range(n)]
-            sync_dur = compute_synchronized_duration(deltas, v_maxs, a_maxs)
-            actual_dur = max(duration, sync_dur)
+            if profile == 'trapezoidal' or profile == 's_curve':
+                from .trajectory_profiles import (
+                    TrapezoidalProfile, SCurveProfile, multi_joint_trapezoidal,
+                    compute_synchronized_duration,
+                )
+                v_max_per = speed if speed is not None else 2.0
+                v_maxs = [v_max_per] * n
+                a_maxs = [accel] * n
 
-            if profile == 's_curve':
-                j_max = accel * 10.0
-                profiles = []
-                for i in range(n):
-                    profiles.append(SCurveProfile(deltas[i], v_max_per, accel, j_max))
-                # Use the longest S-curve duration
-                s_dur = max(p.duration for p in profiles)
-                actual_dur = max(actual_dur, s_dur)
-                actual_steps = max(1, int(actual_dur / dt))
+                # Compute synchronized profiles for all joints
+                deltas = [joints[i] - start_pos[i] for i in range(n)]
+                sync_dur = compute_synchronized_duration(deltas, v_maxs, a_maxs)
+                actual_dur = max(duration, sync_dur)
 
-                def _frames():
-                    for step in range(actual_steps + 1):
-                        t = step * dt
-                        positions = []
-                        velocities = []
-                        for i in range(n):
-                            pt = profiles[i].evaluate(min(t, profiles[i].duration))
-                            positions.append(start_pos[i] + pt.position)
-                            velocities.append(pt.velocity)
-                        if use_adaptive:
-                            kps, kds = self._compute_gains(positions)
-                        else:
-                            kps, kds = [kp] * n, [kd] * n
-                        yield MotionFrame(
-                            positions=positions, velocities=velocities,
-                            kps=kps, kds=kds, torques=[0.0] * n, dt=dt,
-                        )
+                if profile == 's_curve':
+                    j_max = accel * 10.0
+                    profiles = []
+                    for i in range(n):
+                        profiles.append(SCurveProfile(deltas[i], v_max_per, accel, j_max))
+                    s_dur = max(p.duration for p in profiles)
+                    actual_dur = max(actual_dur, s_dur)
+                    actual_steps = max(1, int(actual_dur / dt))
+                    _frames = lambda: scurve_joint_frames(ctx, profiles, actual_steps)
+                else:
+                    joint_profiles = multi_joint_trapezoidal(
+                        start_pos, joints, v_maxs, a_maxs, dt,
+                        target_duration=actual_dur)
+                    _frames = lambda: trapezoidal_joint_frames(ctx, joint_profiles)
             else:
-                # Trapezoidal
-                joint_profiles = multi_joint_trapezoidal(
-                    start_pos, joints, v_maxs, a_maxs, dt,
-                    target_duration=actual_dur)
-                num_frames = len(joint_profiles[0]) if joint_profiles else steps + 1
+                _frames = lambda: cosine_joint_frames(ctx, joints, duration)
 
-                def _frames():
-                    for step in range(num_frames):
-                        positions = [joint_profiles[i][min(step, len(joint_profiles[i])-1)].position for i in range(n)]
-                        velocities = [joint_profiles[i][min(step, len(joint_profiles[i])-1)].velocity for i in range(n)]
-                        if use_adaptive:
-                            kps, kds = self._compute_gains(positions)
-                        else:
-                            kps, kds = [kp] * n, [kd] * n
-                        yield MotionFrame(
-                            positions=positions, velocities=velocities,
-                            kps=kps, kds=kds, torques=[0.0] * n, dt=dt,
-                        )
-        else:
-            # Cosine interpolation (default, original behavior)
-            def _frames():
-                for step in range(steps + 1):
-                    t = step / steps
-                    alpha = 0.5 * (1.0 - math.cos(math.pi * t))
-                    vel_alpha = 0.5 * math.pi * math.sin(math.pi * t) / duration
-                    positions = [start_pos[i] + alpha * (joints[i] - start_pos[i]) for i in range(n)]
-                    velocities = [vel_alpha * (joints[i] - start_pos[i]) for i in range(n)]
-                    if use_adaptive:
-                        kps, kds = self._compute_gains(positions)
-                    else:
-                        kps, kds = [kp] * n, [kd] * n
-                    yield MotionFrame(
-                        positions=positions, velocities=velocities,
-                        kps=kps, kds=kds, torques=[0.0] * n, dt=dt,
-                    )
+            self._state = self._executor.run(_frames())
 
-        self._state = self._executor.run(_frames())
+            if not self._safety.emergency_stopped:
+                max_err = max(abs(self._state.joints[i] - joints[i]) for i in range(n))
+                if max_err > 0.01:
+                    logger.warning(
+                        f"movej: target clamped by safety limits (max error: {max_err:.3f} rad)")
 
-        if not self._safety.emergency_stopped:
-            max_err = max(abs(self._state.joints[i] - joints[i]) for i in range(n))
-            if max_err > 0.01:
-                logger.warning(
-                    f"movej: target clamped by safety limits (max error: {max_err:.3f} rad)")
-
-        return self._state
+            return self._state
+        finally:
+            self._end_motion()
 
     def movel(self, position: Union[list, np.ndarray],
               rotation: Union[list, np.ndarray] = None,
@@ -452,62 +478,51 @@ class Arm:
         self._check_enabled()
         self._check_no_freedrive()
         self._begin_motion()
-        ik = self._get_ik()
-        use_adaptive = (kp is None and kd is None)
-        if not use_adaptive:
-            kp = self._default_kp if kp is None else kp
-            kd = self._default_kd if kd is None else kd
-        n = self.num_joints
+        try:
+            ik = self._get_ik()
+            use_adaptive = (kp is None and kd is None)
+            if not use_adaptive:
+                kp = self._default_kp if kp is None else kp
+                kd = self._default_kd if kd is None else kd
+            n = self.num_joints
 
-        # Parse pose: accept [x,y,z,rx,ry,rz] or separate position+rotation
-        target_pos, target_rot = self._parse_pose("movel", position, rotation)
+            # Parse pose: accept [x,y,z,rx,ry,rz] or separate position+rotation
+            target_pos, target_rot = self._parse_pose("movel", position, rotation)
 
-        # Get current EE pose
-        fk = self._get_fk()
-        start_pos_ee, start_rot_ee = fk.get_ee_pose(self._state.joints)
+            # Get current EE pose in base/flange frame (same frame as _parse_pose output)
+            fk = self._get_fk()
+            with self._lock:
+                current_joints = list(self._state.joints)
+            start_pos_ee, start_rot_ee = fk.get_ee_pose(current_joints)
 
-        # Auto-compute duration
-        if duration is None:
-            dist = np.linalg.norm(target_pos - start_pos_ee)
-            if speed is not None:
-                accel = acceleration if acceleration is not None else 1.2
-                duration = self._duration_from_speed(dist, speed, accel)
-            else:
-                duration = max(1.0, dist / 0.1)  # ~0.1 m/s max
-
-        steps = max(1, int(duration * self._control_freq))
-        dt = 1.0 / self._control_freq
-        pos_delta = target_pos - start_pos_ee
-
-        def _frames():
-            prev_joints = None
-            for step in range(steps + 1):
-                t = step / steps
-                alpha = 0.5 * (1.0 - math.cos(math.pi * t))
-                interp_pos = start_pos_ee + alpha * pos_delta
-                interp_rot = geometry.slerp_matrix(start_rot_ee, target_rot, alpha)
-
-                q = ik.solve(interp_pos, interp_rot, dt=dt)
-                joints = q.tolist() if hasattr(q, 'tolist') else list(q)
-
-                if prev_joints is not None:
-                    velocities = [(joints[i] - prev_joints[i]) / dt for i in range(n)]
+            # Auto-compute duration
+            if duration is None:
+                dist = np.linalg.norm(target_pos - start_pos_ee)
+                if speed is not None:
+                    accel = acceleration if acceleration is not None else 1.2
+                    duration = self._duration_from_speed(dist, speed, accel)
                 else:
-                    velocities = [0.0] * n
-                prev_joints = list(joints)
+                    duration = max(1.0, dist / 0.1)  # ~0.1 m/s max
 
-                if use_adaptive:
-                    kps, kds = self._compute_gains(joints)
-                else:
-                    kps, kds = [kp] * n, [kd] * n
-                yield MotionFrame(
-                    positions=joints, velocities=velocities,
-                    kps=kps, kds=kds, torques=[0.0] * n, dt=dt,
-                )
+            steps = max(1, int(duration * self._control_freq))
+            dt = 1.0 / self._control_freq
 
-        self._state = self._executor.run(_frames())
+            ctx = MotionContext(
+                start_joints=current_joints, num_joints=n, dt=dt, steps=steps,
+                compute_gains=self._compute_gains if use_adaptive else None,
+                fixed_kp=kp if not use_adaptive else None,
+                fixed_kd=kd if not use_adaptive else None,
+            )
 
-        return self._state
+            self._state = self._executor.run(
+                cartesian_linear_frames(ctx, start_pos_ee, start_rot_ee,
+                                        target_pos, target_rot, ik,
+                                        geometry.slerp_matrix)
+            )
+
+            return self._state
+        finally:
+            self._end_motion()
 
     def movep(self, position: Union[list, np.ndarray],
               rotation: Union[list, np.ndarray] = None,
@@ -575,82 +590,58 @@ class Arm:
         self._check_enabled()
         self._check_no_freedrive()
         self._begin_motion()
-        ik = self._get_ik()
-        fk = self._get_fk()
-        use_adaptive = (kp is None and kd is None)
-        if not use_adaptive:
-            kp = self._default_kp if kp is None else kp
-            kd = self._default_kd if kd is None else kd
-        n = self.num_joints
+        try:
+            ik = self._get_ik()
+            fk = self._get_fk()
+            use_adaptive = (kp is None and kd is None)
+            if not use_adaptive:
+                kp = self._default_kp if kp is None else kp
+                kd = self._default_kd if kd is None else kd
+            n = self.num_joints
 
-        via_pose = np.asarray(via_pose, dtype=float)
-        target_pose = np.asarray(target_pose, dtype=float)
+            # Parse via and target through coordinate transforms (world→base, TCP→flange)
+            p1, r1 = self._parse_pose("movec", via_pose, None)
+            p2, r2 = self._parse_pose("movec", target_pose, None)
 
-        # Get three points: start (current), via, target
-        p0, r0 = fk.get_ee_pose(self._state.joints)
-        p1 = via_pose[:3]
-        p2 = target_pose[:3]
-        r1 = geometry.rotvec_to_matrix(via_pose[3:])
-        r2 = geometry.rotvec_to_matrix(target_pose[3:])
+            # Start point: current FK in base/flange frame (same as _parse_pose output)
+            with self._lock:
+                current_joints = list(self._state.joints)
+            p0, r0 = fk.get_ee_pose(current_joints)
 
-        # Fit circle through 3 points
-        center, radius, normal = geometry.fit_circle_3points(p0, p1, p2)
+            # Fit circle through 3 points
+            center, radius, normal = geometry.fit_circle_3points(p0, p1, p2)
 
-        # Auto-compute duration from arc length
-        if duration is None:
-            arc_length = geometry.arc_length_3points(p0, p1, p2, center, radius, normal)
-            if speed is not None:
-                accel = acceleration if acceleration is not None else 1.2
-                duration = self._duration_from_speed(arc_length, speed, accel)
-            else:
-                duration = max(1.0, arc_length / 0.1)  # ~0.1 m/s
-
-        steps = max(1, int(duration * self._control_freq))
-        dt = 1.0 / self._control_freq
-
-        # Parameterize arc: angle from p0 to p2 through p1
-        v0 = p0 - center
-        total_angle = geometry.signed_arc_angle(v0, p2 - center, normal, p1 - center)
-
-        def _frames():
-            prev_joints = None
-            for step in range(steps + 1):
-                t = step / steps
-                alpha = 0.5 * (1.0 - math.cos(math.pi * t))
-                angle = alpha * total_angle
-
-                interp_pos = center + geometry.rotate_vector(v0, normal, angle)
-
-                if alpha <= 0.5:
-                    t_seg = alpha * 2
-                    Ra = geometry.slerp_matrix(r0, r1, t_seg)
-                    Rb = geometry.slerp_matrix(r1, r2, t_seg * 0.5)
+            # Auto-compute duration from arc length
+            if duration is None:
+                arc_length = geometry.arc_length_3points(p0, p1, p2, center, radius, normal)
+                if speed is not None:
+                    accel = acceleration if acceleration is not None else 1.2
+                    duration = self._duration_from_speed(arc_length, speed, accel)
                 else:
-                    t_seg = (alpha - 0.5) * 2
-                    Ra = geometry.slerp_matrix(r0, r1, 0.5 + t_seg * 0.5)
-                    Rb = geometry.slerp_matrix(r1, r2, t_seg)
-                interp_rot = geometry.slerp_matrix(Ra, Rb, alpha)
+                    duration = max(1.0, arc_length / 0.1)  # ~0.1 m/s
 
-                q = ik.solve(interp_pos, interp_rot, dt=dt)
-                joints = q.tolist() if hasattr(q, 'tolist') else list(q)
+            steps = max(1, int(duration * self._control_freq))
+            dt = 1.0 / self._control_freq
 
-                if prev_joints is not None:
-                    velocities = [(joints[i] - prev_joints[i]) / dt for i in range(n)]
-                else:
-                    velocities = [0.0] * n
-                prev_joints = list(joints)
+            # Parameterize arc: angle from p0 to p2 through p1
+            v0 = p0 - center
+            total_angle = geometry.signed_arc_angle(v0, p2 - center, normal, p1 - center)
 
-                if use_adaptive:
-                    kps, kds = self._compute_gains(joints)
-                else:
-                    kps, kds = [kp] * n, [kd] * n
-                yield MotionFrame(
-                    positions=joints, velocities=velocities,
-                    kps=kps, kds=kds, torques=[0.0] * n, dt=dt,
-                )
+            ctx = MotionContext(
+                start_joints=current_joints, num_joints=n, dt=dt, steps=steps,
+                compute_gains=self._compute_gains if use_adaptive else None,
+                fixed_kp=kp if not use_adaptive else None,
+                fixed_kd=kd if not use_adaptive else None,
+            )
 
-        self._state = self._executor.run(_frames())
-        return self._state
+            self._state = self._executor.run(
+                circular_arc_frames(ctx, center, v0, normal, total_angle,
+                                    r0, r1, r2, ik, geometry.slerp_matrix,
+                                    geometry.rotate_vector)
+            )
+            return self._state
+        finally:
+            self._end_motion()
 
     def home(self, duration: Optional[float] = None,
              kp: Optional[float] = None, kd: Optional[float] = None) -> ArmState:
@@ -667,7 +658,8 @@ class Arm:
 
     def servoj(self, joints: list[float],
                kp: Optional[float] = None, kd: Optional[float] = None,
-               tau_ff: Optional[list[float]] = None) -> ArmState:
+               tau_ff: Optional[list[float]] = None,
+               velocities: Optional[list[float]] = None) -> ArmState:
         """
         Send a single joint-space target (real-time control).
 
@@ -680,6 +672,8 @@ class Arm:
             kd: Damping gain (default from model). Set to 0 for pure torque mode.
             tau_ff: Feedforward torques (Nm). Added to PD output.
                     If None, gravity compensation is used.
+            velocities: Velocity feedforward per joint (rad/s). Improves tracking
+                        during fast motion. If None, zeros are sent.
 
         Returns:
             Current arm state from feedback.
@@ -690,23 +684,29 @@ class Arm:
         kd = self._default_kd if kd is None else kd
         n = self.num_joints
 
-        if len(joints) != n:
-            raise OneroConfigError(f"Expected {n} joints, got {len(joints)}")
+        joints = self._validate_joints(joints)
 
         if tau_ff is not None:
             torques = list(tau_ff)
         else:
-            torques = self._gravity_torques(list(self._state.joints))
-        self._state = self._safe_backend.command(
+            with self._lock:
+                cur_joints = list(self._state.joints)
+            torques = self._gravity_torques(cur_joints)
+
+        vel_cmd = list(velocities) if velocities is not None else [0.0] * n
+
+        state = self._safe_backend.command(
             positions=joints,
-            velocities=[0.0] * n,
+            velocities=vel_cmd,
             kps=[kp] * n,
             kds=[kd] * n,
             torques=torques,
         )
+        with self._lock:
+            self._state = state
         self._recorder.record_frame(
-            self._state.joints, self._state.velocities, self._state.torques)
-        return self._state
+            state.joints, state.velocities, state.torques)
+        return state
 
     def servop(self, position: Union[list, np.ndarray],
                rotation: Union[list, np.ndarray] = None,
@@ -759,51 +759,47 @@ class Arm:
         self._check_enabled()
         self._check_no_freedrive()
         self._begin_motion()
-        n = self.num_joints
-        dt = 1.0 / self._control_freq
+        try:
+            n = self.num_joints
+            dt = 1.0 / self._control_freq
 
-        if len(velocities) != n:
-            raise OneroConfigError(f"Expected {n} velocities, got {len(velocities)}")
+            velocities = self._validate_joints(velocities, param_name="velocities")
 
-        target_vel = list(velocities)
+            target_vel = list(velocities)
 
-        max_vel_delta = max(abs(v) for v in target_vel) if target_vel else 0
-        ramp_time = max_vel_delta / acceleration if acceleration > 0 else 0
-        ramp_steps = int(ramp_time * self._control_freq)
+            max_vel_delta = max(abs(v) for v in target_vel) if target_vel else 0
+            ramp_time = max_vel_delta / acceleration if acceleration > 0 else 0
+            ramp_steps = int(ramp_time * self._control_freq)
 
-        if duration is not None:
-            hold_time = max(0, duration - 2 * ramp_time)
-        else:
-            hold_time = 1.0
-        hold_steps = int(hold_time * self._control_freq)
+            if duration is not None:
+                hold_time = max(0, duration - 2 * ramp_time)
+            else:
+                hold_time = 1.0
+            hold_steps = int(hold_time * self._control_freq)
 
-        def _frames():
-            # Phase 1: Ramp up
-            for step in range(ramp_steps):
-                alpha = (step + 1) / max(ramp_steps, 1)
-                yield VelocityFrame(velocities=[alpha * v for v in target_vel], dt=dt)
-            # Phase 2: Hold
-            for step in range(hold_steps):
-                yield VelocityFrame(velocities=target_vel, dt=dt)
-            # Phase 3: Ramp down
-            for step in range(ramp_steps):
-                alpha = 1.0 - (step + 1) / max(ramp_steps, 1)
-                yield VelocityFrame(velocities=[alpha * v for v in target_vel], dt=dt)
+            self._state = self._executor.run(
+                velocity_joint_frames(target_vel, ramp_steps, hold_steps, dt)
+            )
 
-        self._state = self._executor.run(_frames())
-
-        # Final: zero velocity, then switch back to position hold
-        self._state = self._command_velocity_safe([0.0] * n)
-        g = self._gravity_torques(list(self._state.joints))
-        self._state = self._backend.command(
-            positions=list(self._state.joints),
-            velocities=[0.0] * n,
-            kps=[self._default_kp] * n,
-            kds=[self._default_kd] * n,
-            torques=g,
-        )
-        self._safety.reconcile_position(list(self._state.joints))
-        return self._state
+            # Gradual transition to position hold (ramp kp over ~50ms to avoid torque jump)
+            settle_steps = max(1, int(0.05 * self._control_freq))
+            cur_joints = list(self._state.joints)
+            g = self._gravity_torques(cur_joints)
+            for step in range(settle_steps):
+                alpha = (step + 1) / settle_steps
+                kps = [alpha * self._default_kp] * n
+                kds = [self._default_kd] * n
+                self._state = self._safe_backend.command(
+                    positions=cur_joints,
+                    velocities=[0.0] * n,
+                    kps=kps, kds=kds, torques=g,
+                    hold=True,
+                )
+                self._clock.tick(dt)
+            self._safety.reconcile_position(list(self._state.joints))
+            return self._state
+        finally:
+            self._end_motion()
 
     def speedl(self, velocities: list[float], acceleration: float = 0.5,
                duration: Optional[float] = None) -> ArmState:
@@ -824,59 +820,64 @@ class Arm:
         self._check_enabled()
         self._check_no_freedrive()
         self._begin_motion()
-        dynamics = self._get_dynamics()
-        twist = np.asarray(velocities, dtype=float)
-        if twist.shape != (6,):
-            raise OneroConfigError(
-                f"speedl: expected 6-element twist [vx,vy,vz,wx,wy,wz], got shape {twist.shape}")
-        n = self.num_joints
-        dt = 1.0 / self._control_freq
+        try:
+            dynamics = self._get_dynamics()
+            twist = np.asarray(velocities, dtype=float)
+            if twist.shape != (6,):
+                raise OneroConfigError(
+                    f"speedl: expected 6-element twist [vx,vy,vz,wx,wy,wz], got shape {twist.shape}")
+            # Transform twist from world to base frame if world_frame is active
+            twist = self._input_twist_transform(twist)
+            n = self.num_joints
+            dt = 1.0 / self._control_freq
 
-        # Compute initial joint velocity for ramp timing
-        joint_vel_target = dynamics.jacobian_solve(self._state.joints, twist)
-        max_vel_delta = float(np.max(np.abs(joint_vel_target)))
-        ramp_time = max_vel_delta / acceleration if acceleration > 0 else 0
-        ramp_steps = int(ramp_time * self._control_freq)
+            # Compute initial joint velocity for ramp timing
+            joint_vel_target = dynamics.jacobian_solve(self._state.joints, twist)
+            max_vel_delta = float(np.max(np.abs(joint_vel_target)))
+            ramp_time = max_vel_delta / acceleration if acceleration > 0 else 0
+            ramp_steps = int(ramp_time * self._control_freq)
 
-        if duration is not None:
-            hold_time = max(0, duration - 2 * ramp_time)
-        else:
-            hold_time = 1.0
-        hold_steps = int(hold_time * self._control_freq)
+            if duration is not None:
+                hold_time = max(0, duration - 2 * ramp_time)
+            else:
+                hold_time = 1.0
+            hold_steps = int(hold_time * self._control_freq)
 
-        def _frames():
-            # Phase 1: Ramp up
-            for step in range(ramp_steps):
-                alpha = (step + 1) / max(ramp_steps, 1)
-                joint_vel = dynamics.jacobian_solve(self._state.joints, alpha * twist)
-                yield VelocityFrame(velocities=joint_vel.tolist(), dt=dt)
-            # Phase 2: Hold at target velocity
-            for step in range(hold_steps):
-                joint_vel = dynamics.jacobian_solve(self._state.joints, twist)
-                yield VelocityFrame(velocities=joint_vel.tolist(), dt=dt)
-            # Phase 3: Ramp down
-            for step in range(ramp_steps):
-                alpha = 1.0 - (step + 1) / max(ramp_steps, 1)
-                joint_vel = dynamics.jacobian_solve(self._state.joints, alpha * twist)
-                yield VelocityFrame(velocities=joint_vel.tolist(), dt=dt)
+            def _get_joints():
+                return self._state.joints
 
-        self._state = self._executor.run(_frames())
+            self._state = self._executor.run(
+                velocity_cartesian_frames(twist, ramp_steps, hold_steps, dt,
+                                          _get_joints, dynamics.jacobian_solve)
+            )
 
-        self._state = self._command_velocity_safe([0.0] * n)
-        g = self._gravity_torques(list(self._state.joints))
-        self._state = self._backend.command(
-            positions=list(self._state.joints),
-            velocities=[0.0] * n,
-            kps=[self._default_kp] * n,
-            kds=[self._default_kd] * n,
-            torques=g,
-        )
-        self._safety.reconcile_position(list(self._state.joints))
-        return self._state
+            # Gradual transition to position hold
+            settle_steps = max(1, int(0.05 * self._control_freq))
+            cur_joints = list(self._state.joints)
+            g = self._gravity_torques(cur_joints)
+            for step in range(settle_steps):
+                alpha = (step + 1) / settle_steps
+                kps = [alpha * self._default_kp] * n
+                kds = [self._default_kd] * n
+                self._state = self._safe_backend.command(
+                    positions=cur_joints,
+                    velocities=[0.0] * n,
+                    kps=kps, kds=kds, torques=g,
+                    hold=True,
+                )
+                self._clock.tick(dt)
+            self._safety.reconcile_position(list(self._state.joints))
+            return self._state
+        finally:
+            self._end_motion()
 
     def stop(self, deceleration: float = 2.0) -> ArmState:
         """
         Decelerate to zero velocity and hold position.
+
+        Can be called while another motion is running (from a different thread)
+        to interrupt it. Triggers emergency stop to abort the in-progress motion,
+        then performs controlled deceleration.
 
         Args:
             deceleration: Rate of deceleration (rad/s^2).
@@ -886,38 +887,59 @@ class Arm:
         """
         self._check_enabled()
         self._check_no_freedrive()
-        self._begin_motion()
-        n = self.num_joints
-        dt = 1.0 / self._control_freq
 
-        # Get fresh state for accurate deceleration
-        self._state = self._backend.get_state()
-        current_vel = list(self._state.velocities)
-        max_vel = max(abs(v) for v in current_vel) if current_vel else 0
+        # If another motion holds the lock, signal it to stop
+        if not self._motion_lock.acquire(blocking=False):
+            self._safety.set_emergency_stop()
+            self._motion_lock.acquire(blocking=True)
+            self._safety.clear_emergency_stop()
 
-        if max_vel < 1e-6:
+        try:
+            self._clock.reset()
+            self._force_mode_origin = None
+            n = self.num_joints
+            dt = 1.0 / self._control_freq
+
+            # Get fresh state for accurate deceleration
+            self._state = self._backend.get_state()
+            current_vel = list(self._state.velocities)
+            max_vel = max(abs(v) for v in current_vel) if current_vel else 0
+
+            if max_vel < 1e-6:
+                g = self._gravity_torques(list(self._state.joints))
+                self._state = self._safe_backend.command(
+                    positions=list(self._state.joints),
+                    velocities=[0.0] * n,
+                    kps=[self._default_kp] * n,
+                    kds=[self._default_kd] * n,
+                    torques=g,
+                    hold=True,
+                )
+                return self._state
+
+            ramp_steps = int((max_vel / deceleration) * self._control_freq)
+
+            def _frames():
+                for step in range(ramp_steps):
+                    alpha = 1.0 - (step + 1) / max(ramp_steps, 1)
+                    yield VelocityFrame(velocities=[alpha * v for v in current_vel], dt=dt)
+
+            self._state = self._executor.run(_frames())
+
+            self._state = self._command_velocity_safe([0.0] * n)
+            g = self._gravity_torques(list(self._state.joints))
+            self._state = self._safe_backend.command(
+                positions=list(self._state.joints),
+                velocities=[0.0] * n,
+                kps=[self._default_kp] * n,
+                kds=[self._default_kd] * n,
+                torques=g,
+                hold=True,
+            )
+            self._safety.reconcile_position(list(self._state.joints))
             return self._state
-
-        ramp_steps = int((max_vel / deceleration) * self._control_freq)
-
-        def _frames():
-            for step in range(ramp_steps):
-                alpha = 1.0 - (step + 1) / max(ramp_steps, 1)
-                yield VelocityFrame(velocities=[alpha * v for v in current_vel], dt=dt)
-
-        self._state = self._executor.run(_frames())
-
-        self._state = self._command_velocity_safe([0.0] * n)
-        g = self._gravity_torques(list(self._state.joints))
-        self._state = self._backend.command(
-            positions=list(self._state.joints),
-            velocities=[0.0] * n,
-            kps=[self._default_kp] * n,
-            kds=[self._default_kd] * n,
-            torques=g,
-        )
-        self._safety.reconcile_position(list(self._state.joints))
-        return self._state
+        finally:
+            self._end_motion()
 
     # ─── Recording / Replay ──────────────────────────────────────────────────
 
@@ -966,56 +988,58 @@ class Arm:
             self.movej(start_joints, duration=lead_in, kp=kp, kd=kd)
 
         self._begin_motion()
+        try:
+            use_adaptive = (kp is None and kd is None)
+            if not use_adaptive:
+                kp = self._default_kp if kp is None else kp
+                kd = self._default_kd if kd is None else kd
+            n = self.num_joints
+            control_dt = 1.0 / self._control_freq
 
-        use_adaptive = (kp is None and kd is None)
-        if not use_adaptive:
-            kp = self._default_kp if kp is None else kp
-            kd = self._default_kd if kd is None else kd
-        n = self.num_joints
-        control_dt = 1.0 / self._control_freq
+            def _gen():
+                frames = recording.frames
+                t0 = frames[0].timestamp
+                total_dur = frames[-1].timestamp - t0
+                playback_dur = total_dur / speed_factor
+                num_steps = max(1, int(playback_dur / control_dt))
 
-        def _gen():
-            frames = recording.frames
-            t0 = frames[0].timestamp
-            total_dur = frames[-1].timestamp - t0
-            playback_dur = total_dur / speed_factor
-            num_steps = max(1, int(playback_dur / control_dt))
-
-            for step in range(1, num_steps + 1):
-                rec_t = t0 + step * control_dt * speed_factor
-                lo = 0
-                hi = len(frames) - 1
-                while lo < hi - 1:
-                    mid = (lo + hi) // 2
-                    if frames[mid].timestamp <= rec_t:
-                        lo = mid
+                for step in range(1, num_steps + 1):
+                    rec_t = t0 + step * control_dt * speed_factor
+                    lo = 0
+                    hi = len(frames) - 1
+                    while lo < hi - 1:
+                        mid = (lo + hi) // 2
+                        if frames[mid].timestamp <= rec_t:
+                            lo = mid
+                        else:
+                            hi = mid
+                    f0, f1 = frames[lo], frames[hi]
+                    seg_dt = f1.timestamp - f0.timestamp
+                    alpha = (rec_t - f0.timestamp) / seg_dt if seg_dt > 0 else 0.0
+                    alpha = min(1.0, max(0.0, alpha))
+                    joints = [
+                        f0.joints[j] + alpha * (f1.joints[j] - f0.joints[j])
+                        for j in range(n)
+                    ]
+                    vels = [
+                        (f0.velocities[j] + alpha * (f1.velocities[j] - f0.velocities[j]))
+                        * speed_factor
+                        if f0.velocities and f1.velocities else 0.0
+                        for j in range(n)
+                    ]
+                    if use_adaptive:
+                        kps, kds = self._compute_gains(joints)
                     else:
-                        hi = mid
-                f0, f1 = frames[lo], frames[hi]
-                seg_dt = f1.timestamp - f0.timestamp
-                alpha = (rec_t - f0.timestamp) / seg_dt if seg_dt > 0 else 0.0
-                alpha = min(1.0, max(0.0, alpha))
-                joints = [
-                    f0.joints[j] + alpha * (f1.joints[j] - f0.joints[j])
-                    for j in range(n)
-                ]
-                vels = [
-                    (f0.velocities[j] + alpha * (f1.velocities[j] - f0.velocities[j]))
-                    * speed_factor
-                    if f0.velocities and f1.velocities else 0.0
-                    for j in range(n)
-                ]
-                if use_adaptive:
-                    kps, kds = self._compute_gains(joints)
-                else:
-                    kps, kds = [kp] * n, [kd] * n
-                yield MotionFrame(
-                    positions=joints, velocities=vels,
-                    kps=kps, kds=kds, torques=[0.0] * n, dt=control_dt,
-                )
+                        kps, kds = [kp] * n, [kd] * n
+                    yield MotionFrame(
+                        positions=joints, velocities=vels,
+                        kps=kps, kds=kds, torques=[0.0] * n, dt=control_dt,
+                    )
 
-        self._state = self._executor.run(_gen())
-        return self._state
+            self._state = self._executor.run(_gen())
+            return self._state
+        finally:
+            self._end_motion()
 
     # ─── Trajectory Execution (blending) ─────────────────────────────────────
 
@@ -1036,31 +1060,35 @@ class Arm:
         """
         self._check_enabled()
         self._begin_motion()
-        use_adaptive = (kp is None and kd is None)
-        if not use_adaptive:
-            kp = self._default_kp if kp is None else kp
-            kd = self._default_kd if kd is None else kd
-        n = self.num_joints
+        try:
+            use_adaptive = (kp is None and kd is None)
+            if not use_adaptive:
+                kp = self._default_kp if kp is None else kp
+                kd = self._default_kd if kd is None else kd
+            n = self.num_joints
 
-        def _gen():
-            for frame in frames:
-                if use_adaptive:
-                    kps, kds = self._compute_gains(frame.joints)
-                else:
-                    kps, kds = [kp] * n, [kd] * n
-                yield MotionFrame(
-                    positions=frame.joints,
-                    velocities=frame.velocities if hasattr(frame, 'velocities') else [0.0] * n,
-                    kps=kps, kds=kds, torques=[0.0] * n, dt=frame.dt,
-                )
+            def _gen():
+                for frame in frames:
+                    if use_adaptive:
+                        kps, kds = self._compute_gains(frame.joints)
+                    else:
+                        kps, kds = [kp] * n, [kd] * n
+                    yield MotionFrame(
+                        positions=frame.joints,
+                        velocities=frame.velocities if hasattr(frame, 'velocities') else [0.0] * n,
+                        kps=kps, kds=kds, torques=[0.0] * n, dt=frame.dt,
+                    )
 
-        self._state = self._executor.run(_gen())
-        return self._state
+            self._state = self._executor.run(_gen())
+            return self._state
+        finally:
+            self._end_motion()
 
     # ─── Freedrive (Teach Mode) ──────────────────────────────────────────────
 
     def freedrive_enable(self, damping: float = 0.5,
-                         free_axes: Optional[list[int]] = None) -> None:
+                         free_axes: Optional[list[int]] = None,
+                         lock_stiffness: float = 200.0) -> None:
         """
         Enter freedrive (teach) mode.
 
@@ -1079,6 +1107,8 @@ class Arm:
                       1=free, 0=locked. Default None means all axes free
                       (equivalent to [1,1,1,1,1,1]). Example: [0,0,1,0,0,0]
                       allows only Z-axis movement (useful for surface following).
+            lock_stiffness: Position gain for locked axes (N/m or Nm/rad).
+                           Higher = stiffer constraint. Default 200.0.
         """
         self._check_enabled()
         if self._freedrive_active:
@@ -1100,37 +1130,46 @@ class Arm:
             n = self.num_joints
             clock = ControlClock()
             q_lock = None
-            kp_lock = 200.0
-            while self._freedrive_active:
-                if self._safety.emergency_stopped:
-                    break
-                with self._lock:
-                    q = list(self._state.joints)
+            pos_lock = None
+            rot_lock = None
+            compliance = ComplianceController(dynamics, n) if lock_mask is not None else None
+            try:
+                while self._freedrive_active:
+                    if self._safety.emergency_stopped:
+                        break
+                    with self._lock:
+                        q = list(self._state.joints)
 
-                gravity_torques = dynamics.gravity_torques(q)
-                torques = list(gravity_torques)
+                    gravity_torques = dynamics.gravity_torques(q)
+                    torques = list(gravity_torques)
 
-                # If some axes are locked, apply stiff constraint via Jacobian
-                if lock_mask is not None:
-                    if q_lock is None:
-                        q_lock = np.array(q)
-                    J = dynamics.jacobian(q)
-                    x_err = J @ (np.array(q) - q_lock)
-                    F_lock = -kp_lock * lock_mask * x_err
-                    tau_lock = J.T @ F_lock
-                    torques = (np.array(torques) + tau_lock).tolist()
+                    if lock_mask is not None:
+                        if q_lock is None:
+                            q_lock = np.array(q)
+                            pos_lock, rot_lock = dynamics.ee_pose(q)
+                        J = dynamics.jacobian(q)
+                        tau_lock = compliance.freedrive_lock_torques(
+                            q, lock_mask, pos_lock, rot_lock, J, lock_stiffness)
+                        torques = (np.array(torques) + tau_lock).tolist()
 
-                with self._lock:
-                    self._state = self._backend.command(
+                    state = self._safe_backend.command(
                         positions=q,
                         velocities=[0.0] * n,
                         kps=[0.0] * n,
                         kds=[damping] * n,
                         torques=torques,
+                        hold=True,
                     )
+                    with self._lock:
+                        self._state = state
                     self._recorder.record_frame(
-                        self._state.joints, self._state.velocities, self._state.torques)
-                clock.tick(dt)
+                        state.joints, state.velocities, state.torques)
+                    clock.tick(dt)
+            except Exception as e:
+                logger.error(f"Freedrive loop crashed: {e}. Triggering emergency stop.")
+                self._safety._trigger_emergency_stop(
+                    0, f"Freedrive loop exception: {e}")
+                self._freedrive_active = False
 
         self._freedrive_thread = threading.Thread(target=_freedrive_loop, daemon=True)
         self._freedrive_thread.start()
@@ -1148,16 +1187,20 @@ class Arm:
             self._freedrive_thread = None
         # Lock position so arm doesn't droop under gravity
         n = self.num_joints
-        g = self._gravity_torques(list(self._state.joints))
-        self._state = self._backend.command(
-            positions=list(self._state.joints),
+        with self._lock:
+            cur_joints = list(self._state.joints)
+        g = self._gravity_torques(cur_joints)
+        state = self._safe_backend.command(
+            positions=cur_joints,
             velocities=[0.0] * n,
             kps=[self._default_kp] * n,
             kds=[self._default_kd] * n,
             torques=g,
+            hold=True,
         )
-        # Reconcile safety baseline with actual post-freedrive position
-        self._safety.reconcile_position(list(self._state.joints))
+        with self._lock:
+            self._state = state
+        self._safety.reconcile_position(cur_joints)
         logger.info("Freedrive mode disabled")
 
     def freedrive_step(self, damping: float = 0.5) -> ArmState:
@@ -1176,12 +1219,13 @@ class Arm:
         q = list(self._state.joints)
         gravity_torques = dynamics.gravity_torques(q)
 
-        self._state = self._backend.command(
+        self._state = self._safe_backend.command(
             positions=q,
             velocities=[0.0] * n,
             kps=[0.0] * n,
             kds=[damping] * n,
             torques=gravity_torques,
+            hold=True,
         )
         self._recorder.record_frame(
             self._state.joints, self._state.velocities, self._state.torques)
@@ -1223,64 +1267,43 @@ class Arm:
         kd = self._default_kd if kd is None else kd
         n = self.num_joints
 
-        q = self._state.joints
-        # Latch position on first force_mode call — hold this position in position-controlled directions
+        with self._lock:
+            q = self._state.joints
+            v_joints = self._state.velocities
         if self._force_mode_origin is None:
             self._force_mode_origin = list(q)
         J = dynamics.jacobian(q)
-        wrench_arr = np.asarray(wrench, dtype=float)
-        selection_arr = np.asarray(selection, dtype=float)
 
-        # Transform wrench to base frame if task_frame is specified
+        wrench_arr = np.asarray(wrench, dtype=float)
+        # Transform wrench from world to base frame if world_frame is active
+        if self._world_frame and task_frame is None:
+            wrench_arr = self._input_wrench_transform(wrench_arr)
+
+        # Resolve task frame rotation
+        task_frame_rotation = None
         if task_frame is not None:
             tf = np.asarray(task_frame, dtype=float)
-            R_task = geometry.rotvec_to_matrix(tf[3:6])
-            # Rotate force and torque components to base frame
-            wrench_arr[:3] = R_task @ wrench_arr[:3]
-            wrench_arr[3:] = R_task @ wrench_arr[3:]
+            task_frame_rotation = geometry.rotvec_to_matrix(tf[3:6])
 
-        # Force-controlled: Jacobian^T @ wrench → joint torques
-        force_torques = J.T @ (selection_arr * wrench_arr)
+        compliance = ComplianceController(dynamics, n)
+        kps, kds, force_torques = compliance.force_step(
+            q, v_joints, selection, wrench_arr, J,
+            task_frame_rotation=task_frame_rotation,
+            limits=limits, kp=kp, kd=kd,
+        )
 
-        # Apply speed limits: scale down force proportionally when approaching limit
-        if limits is not None:
-            limits_arr = np.asarray(limits, dtype=float)
-            v_cart = J @ np.asarray(self._state.velocities, dtype=float)
-            scale = 1.0
-            for i in range(6):
-                if selection_arr[i] > 0 and limits_arr[i] > 0:
-                    ratio = abs(v_cart[i]) / limits_arr[i]
-                    if ratio > 1.0:
-                        scale = 0.0
-                        break
-                    elif ratio > 0.8:
-                        # Linear ramp-down from 80% to 100% of limit
-                        s = 1.0 - (ratio - 0.8) / 0.2
-                        scale = min(scale, s)
-            force_torques *= scale
-
-        # Position-controlled: reduce kp for joints that map to force-controlled directions.
-        # Project selection through Jacobian to compute per-joint force-control weight.
-        # For each joint, if it primarily contributes to a force-controlled direction,
-        # its kp should be reduced so it doesn't fight the torque_ff.
-        J_norm = np.abs(J)
-        col_norms = J_norm.sum(axis=0)
-        col_norms[col_norms < 1e-10] = 1.0
-        J_contrib = J_norm / col_norms  # normalized contribution of each joint to each Cartesian DOF
-        force_weight = J_contrib.T @ selection_arr  # per-joint: how much it serves force directions
-        force_weight = np.clip(force_weight, 0.0, 1.0)
-        kps = [(kp * (1.0 - fw)) for fw in force_weight]
-        kds = [kd] * n
-
-        g = np.array(self._gravity_torques(list(self._state.joints)))
-        self._state = self._backend.command(
+        g = np.array(self._gravity_torques(list(q)))
+        state = self._safe_backend.command(
             positions=self._force_mode_origin,
             velocities=[0.0] * n,
             kps=kps,
             kds=kds,
             torques=(force_torques + g).tolist(),
+            hold=True,
         )
-        return self._state
+        with self._lock:
+            self._state = state
+        return state
 
     def force_mode_disable(self) -> None:
         """
@@ -1292,15 +1315,20 @@ class Arm:
         self._check_enabled()
         self._force_mode_origin = None
         n = self.num_joints
-        g = self._gravity_torques(list(self._state.joints))
-        self._state = self._backend.command(
-            positions=self._state.joints,
+        with self._lock:
+            cur_joints = list(self._state.joints)
+        g = self._gravity_torques(cur_joints)
+        state = self._safe_backend.command(
+            positions=cur_joints,
             velocities=[0.0] * n,
             kps=[self._default_kp] * n,
             kds=[self._default_kd] * n,
             torques=g,
+            hold=True,
         )
-        self._safety.reconcile_position(list(self._state.joints))
+        with self._lock:
+            self._state = state
+        self._safety.reconcile_position(list(state.joints))
 
     # ─── Configuration ────────────────────────────────────────────────────────
 
@@ -1357,12 +1385,7 @@ class Arm:
 
     def _compute_gains(self, q) -> tuple[list[float], list[float]]:
         """Compute adaptive kp/kd for current configuration. Falls back to fixed gains."""
-        try:
-            dynamics = self._get_dynamics()
-            M = dynamics.mass_matrix(q)
-            return self._gain_policy.compute(M)
-        except (ImportError, Exception):
-            return self._gain_policy.fallback(self.num_joints)
+        return self._gain_policy.compute_adaptive(q, self.num_joints)
 
     def get_joint_limits(self) -> list[tuple[float, float]]:
         """
@@ -1372,7 +1395,7 @@ class Arm:
             List of (min, max) radians per joint.
         """
         return [
-            (spec.p_min if spec.p_min is not None else -spec.p_max, spec.p_max)
+            (spec.p_min, spec.p_max)
             for spec in self._model_info.joints
         ]
 
@@ -1393,6 +1416,178 @@ class Arm:
         dynamics.set_payload(mass, cog)
         logger.info(f"Payload set: {mass:.2f} kg, CoG={cog}")
 
+    def estimate_payload(self, num_samples: int = 50,
+                         settle_time: float = 0.5) -> float:
+        """
+        Estimate payload mass from torque residual at current static configuration.
+
+        The arm must be stationary (holding position). Compares measured torques
+        against model-predicted gravity torques (without payload) and solves for
+        the mass that explains the residual via the Jacobian.
+
+        After estimation, automatically calls set_payload() to update dynamics.
+
+        Args:
+            num_samples: Number of torque readings to average (reduces noise).
+            settle_time: Seconds to wait for arm to settle before measuring.
+
+        Returns:
+            Estimated payload mass (kg). Returns 0 if estimation fails.
+        """
+        import time
+
+        self._check_enabled()
+        dynamics = self._get_dynamics()
+
+        # Wait for the arm to be fully static
+        time.sleep(settle_time)
+
+        # Average multiple torque readings to reduce noise
+        tau_samples = []
+        q_samples = []
+        dt = 1.0 / self._control_freq
+        for _ in range(num_samples):
+            state = self._backend.get_state()
+            tau_samples.append(np.array(state.torques))
+            q_samples.append(np.array(state.joints))
+            time.sleep(dt)
+
+        tau_measured = np.mean(tau_samples, axis=0)
+        q = np.mean(q_samples, axis=0)
+
+        # Compute baseline gravity torques WITHOUT payload (thread-safe, no mutation)
+        tau_expected = np.array(dynamics.gravity_torques_no_payload(q.tolist()))
+
+        # Residual = what the payload contributes
+        tau_residual = tau_measured - tau_expected
+
+        # Get gravity direction in base frame
+        g_vec = dynamics.get_gravity_vector()
+
+        # Jacobian: translational part maps EE force → joint torques
+        J = dynamics.jacobian(q.tolist())
+        J_linear = J[:3, :]  # 3×n
+
+        # τ_residual ≈ J_linear.T @ (m * g_vec)
+        # Solve least-squares for m: J_linear.T @ g_vec * m = τ_residual
+        g_torque_unit = J_linear.T @ g_vec  # n×1: torque per unit mass
+        norm_sq = np.dot(g_torque_unit, g_torque_unit)
+
+        if norm_sq < 1e-10:
+            logger.warning("Payload estimation failed: Jacobian×gravity near zero "
+                           "(arm may be in singular configuration)")
+            return 0.0
+
+        mass = np.dot(g_torque_unit, tau_residual) / norm_sq
+        mass = max(0.0, mass)  # Mass can't be negative
+
+        # Apply payload (assume CoG at EE origin — good enough for most grippers)
+        if mass > 0.01:
+            self.set_payload(mass, [0.0, 0.0, 0.0])
+            logger.info(f"Payload estimated: {mass:.3f} kg")
+        else:
+            logger.info("No significant payload detected")
+
+        return mass
+
+    def enable_auto_payload(self, velocity_threshold: float = 0.02,
+                            quiet_duration: float = 0.3,
+                            min_change: float = 0.05) -> None:
+        """
+        Enable automatic payload estimation during operation.
+
+        Monitors joint velocities in the background. When the arm is quasi-static
+        (all joint velocities below threshold for quiet_duration), automatically
+        re-estimates payload mass. Updates dynamics only if the estimated mass
+        differs from current by more than min_change kg.
+
+        This provides "no-stop" payload adaptation: after grasping an object,
+        the arm naturally pauses briefly → estimation triggers → compensation
+        updates → subsequent motions are more precise.
+
+        Args:
+            velocity_threshold: Max joint velocity (rad/s) to count as "static".
+            quiet_duration: Seconds of continuous quiet needed to trigger estimation.
+            min_change: Minimum mass change (kg) to update dynamics (avoids jitter).
+        """
+        self._check_enabled()
+        self._get_dynamics()  # Verify dynamics available
+
+        self._auto_payload_config = {
+            "velocity_threshold": velocity_threshold,
+            "quiet_duration": quiet_duration,
+            "min_change": min_change,
+        }
+        self._auto_payload_mass = 0.0
+        self._auto_payload_quiet_start = None
+        self._auto_payload_enabled = True
+        logger.info(f"Auto payload enabled (threshold={velocity_threshold} rad/s, "
+                    f"quiet={quiet_duration}s)")
+
+    def disable_auto_payload(self) -> None:
+        """Disable automatic payload estimation."""
+        self._auto_payload_enabled = False
+        logger.info("Auto payload disabled")
+
+    def _check_auto_payload(self) -> None:
+        """Called from control loop — check if we should re-estimate payload."""
+        if not getattr(self, '_auto_payload_enabled', False):
+            return
+
+        import time
+        config = self._auto_payload_config
+        state = self._state
+        if state is None:
+            return
+
+        # Check if all joints are quasi-static
+        max_vel = max(abs(v) for v in state.velocities)
+        now = time.monotonic()
+
+        if max_vel < config["velocity_threshold"]:
+            if self._auto_payload_quiet_start is None:
+                self._auto_payload_quiet_start = now
+            elif now - self._auto_payload_quiet_start >= config["quiet_duration"]:
+                # Quiet long enough → estimate
+                self._auto_payload_quiet_start = None
+                self._do_quick_payload_estimate(state, config["min_change"])
+        else:
+            self._auto_payload_quiet_start = None
+
+    def _do_quick_payload_estimate(self, state, min_change: float) -> None:
+        """Quick single-sample payload estimate (called from control loop context)."""
+        try:
+            dynamics = self._get_dynamics()
+            q = np.array(state.joints)
+            tau_measured = np.array(state.torques)
+
+            old_mass = getattr(self, '_auto_payload_mass', 0.0)
+
+            # Thread-safe: compute baseline without mutating shared state
+            tau_expected = np.array(dynamics.gravity_torques_no_payload(q.tolist()))
+
+            tau_residual = tau_measured - tau_expected
+
+            g_vec = dynamics.get_gravity_vector()
+
+            J = dynamics.jacobian(q.tolist())
+            J_linear = J[:3, :]
+            g_torque_unit = J_linear.T @ g_vec
+            norm_sq = np.dot(g_torque_unit, g_torque_unit)
+
+            if norm_sq < 1e-10:
+                return
+
+            mass = max(0.0, np.dot(g_torque_unit, tau_residual) / norm_sq)
+
+            if abs(mass - old_mass) > min_change:
+                self._auto_payload_mass = mass
+                if mass > 0.01:
+                    dynamics.set_payload(mass, [0.0, 0.0, 0.0])
+                logger.info(f"Auto payload updated: {old_mass:.3f} → {mass:.3f} kg")
+        except Exception as e:
+            logger.debug(f"Auto payload estimate failed: {e}")
+
     def get_external_wrench(self) -> np.ndarray:
         """
         Estimate external force/torque at the end-effector.
@@ -1400,16 +1595,19 @@ class Arm:
         Uses torque residual (measured - model predicted) and Jacobian
         to estimate the external wrench. Requires dynamics model.
 
+        If world_frame is enabled, returns wrench in world coordinates.
+
         Returns:
             Estimated wrench [fx, fy, fz, tx, ty, tz] (N, Nm).
         """
         self._check_enabled()
         dynamics = self._get_dynamics()
-        return dynamics.estimate_external_wrench(
+        wrench = dynamics.estimate_external_wrench(
             self._state.joints,
             self._state.velocities,
             self._state.torques,
         )
+        return self._output_wrench_transform(wrench)
 
     def check_collision(self) -> bool:
         """
@@ -1526,9 +1724,12 @@ class Arm:
             logger.info(f"Friction phase: joint {j+1}/{self.num_joints}")
 
         result = calibrator.fit_with_friction(configs_all, torques_all, vels_all)
+        # Record the gravity direction used during calibration
+        result.gravity_vector = self._gravity_in_base.tolist()
         logger.info(
             f"Calibration complete: rank={result.rank}, "
-            f"RMS={result.residual_rms:.4f} Nm"
+            f"RMS={result.residual_rms:.4f} Nm, "
+            f"gravity={result.gravity_vector}"
         )
         dynamics.apply_calibration(result.params)
 
@@ -1545,12 +1746,28 @@ class Arm:
         Updates the dynamics model parameters so that gravity_torques()
         and all dependent methods use the calibrated values.
 
+        Warns if the calibration was performed with a different gravity
+        direction (mounting orientation) than the current configuration.
+
         Args:
             path: Path to calibration JSON file.
         """
         from .calibration import CalibrationResult
 
         result = CalibrationResult.load(path)
+
+        # Check gravity direction consistency
+        if result.gravity_vector is not None:
+            cal_g = np.asarray(result.gravity_vector)
+            cur_g = self._gravity_in_base
+            if not np.allclose(cal_g, cur_g, atol=0.1):
+                logger.warning(
+                    f"Calibration was performed with gravity={cal_g.tolist()} "
+                    f"but current mounting has gravity={cur_g.tolist()}. "
+                    f"Results may be inaccurate if mounting orientation changed. "
+                    f"Consider re-calibrating with current mounting."
+                )
+
         dynamics = self._get_dynamics()
         dynamics.apply_calibration(result.params)
         logger.info(
@@ -1586,11 +1803,16 @@ class Arm:
         if hasattr(self, '_safety'):
             self._safety.record_hardware_fault(joint_idx, error_code)
 
+    def _set_state_locked(self, state: ArmState) -> None:
+        with self._lock:
+            self._state = state
+
     def _check_enabled(self) -> None:
         if not self._enabled:
             raise OneroError("Arm is not enabled. Call arm.enable() first.")
         if self._safety.emergency_stopped:
-            raise OneroError("Arm is in emergency stop. Re-enable to resume.")
+            raise OneroError(
+                "Arm is in emergency stop. Call arm.enable() to clear and re-enable.")
 
     def _check_no_freedrive(self) -> None:
         if self._freedrive_active:
@@ -1599,14 +1821,49 @@ class Arm:
                 "Call freedrive_disable() first."
             )
 
+    def _validate_joints(self, joints, param_name: str = "joints") -> list[float]:
+        """Validate and convert joint array input. Returns list[float]."""
+        if joints is None:
+            raise OneroConfigError(
+                f"'{param_name}' cannot be None. "
+                f"Pass a list of {self.num_joints} joint angles in radians.")
+        try:
+            result = [float(v) for v in joints]
+        except (TypeError, ValueError) as e:
+            raise OneroConfigError(
+                f"'{param_name}' must be a list of numbers. Got: {type(joints).__name__}. "
+                f"Example: arm.movej([0.0, -0.5, 0.3, 0.5, -0.2, 0.3, 0.0])")
+        if len(result) != self.num_joints:
+            raise OneroConfigError(
+                f"'{param_name}' must have {self.num_joints} elements "
+                f"(one per joint), got {len(result)}")
+        return result
+
     def _step_dt(self, dt: float) -> None:
         """Deadline-based sleep: accounts for time spent in command processing."""
         self._clock.tick(dt)
 
     def _begin_motion(self) -> None:
-        """Reset state for a new planned motion."""
+        """Acquire motion lock and reset state for a new planned motion."""
+        if not self._motion_lock.acquire(blocking=False):
+            raise OneroError(
+                "Another motion is in progress. Wait for it to complete "
+                "or call arm.stop() first.")
         self._clock.reset()
         self._force_mode_origin = None
+        self._gain_policy.reset_cache()
+        self._check_auto_payload()
+
+    def _end_motion(self) -> None:
+        """Release motion lock after motion completes."""
+        if self._ik is not None:
+            with self._lock:
+                q = list(self._state.joints)
+            self._ik.reset(np.array(q))
+        try:
+            self._motion_lock.release()
+        except RuntimeError:
+            pass
 
     @staticmethod
     def _duration_from_speed(distance: float, speed: float,
@@ -1627,11 +1884,11 @@ class Arm:
         return self._safe_backend.command_velocity(velocities)
 
     def _parse_pose(self, method: str, position, rotation):
-        """Parse position/rotation arguments into (pos_3d, rot_matrix)."""
+        """Parse position/rotation arguments into (pos_3d, rot_matrix) in base frame."""
         pos_arr = np.asarray(position, dtype=float)
         if rotation is None:
             if pos_arr.shape == (6,):
-                return pos_arr[:3], geometry.rotvec_to_matrix(pos_arr[3:])
+                pos, rot = pos_arr[:3], geometry.rotvec_to_matrix(pos_arr[3:])
             elif pos_arr.shape == (3,):
                 raise OneroConfigError(
                     f"{method}: 3D position requires rotation argument. "
@@ -1641,7 +1898,9 @@ class Arm:
                     f"{method}: expected position as [x,y,z] (3D) or "
                     f"[x,y,z,rx,ry,rz] (6D), got shape {pos_arr.shape}")
         else:
-            return pos_arr, geometry.ensure_rotation_matrix(rotation)
+            pos, rot = pos_arr, geometry.ensure_rotation_matrix(rotation)
+        # Apply world→base and TCP→flange transforms
+        return self._input_pose_transform(pos, rot)
 
     def _get_fk(self):
         """Lazy-init FK from URDF."""
@@ -1688,6 +1947,8 @@ class Arm:
             if urdf_path is None:
                 raise OneroConfigError("URDF not configured for dynamics.")
             self._dynamics = DynamicsModel(urdf_path)
+            # Set gravity direction based on mounting orientation
+            self._dynamics.set_gravity(self._gravity_in_base.tolist())
         return self._dynamics
 
     def _gravity_torques(self, joint_positions: list[float]) -> list[float]:
@@ -1695,7 +1956,16 @@ class Arm:
         try:
             dynamics = self._get_dynamics()
             return dynamics.gravity_torques(joint_positions)
-        except (ImportError, Exception):
+        except ImportError:
+            if not getattr(self, '_gravity_warned', False):
+                self._gravity_warned = True
+                logger.warning(
+                    "Dynamics model unavailable (pinocchio not installed). "
+                    "Gravity compensation disabled — freedrive may not hold position. "
+                    "Install with: pip install onero-sdk[dynamics]")
+            return [0.0] * self.num_joints
+        except Exception as e:
+            logger.warning(f"Gravity torque computation failed: {e}. Using zero feedforward.")
             return [0.0] * self.num_joints
 
     # ------------------------------------------------------------------
