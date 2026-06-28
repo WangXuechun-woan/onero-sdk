@@ -14,10 +14,10 @@ class OneroRobotConfig(RobotConfig):
 
     Args:
         can_channel: SocketCAN interface name (e.g. "can0").
-        model: Arm model name (e.g. "A1").
+        model: Arm model name (e.g. "A1R", "A1L").
         cameras: Camera configurations for observation.
     """
 
     can_channel: str = "can0"
-    model: str = "A1"
+    model: str = "A1R"
     cameras: dict[str, CameraConfig] = field(default_factory=dict)

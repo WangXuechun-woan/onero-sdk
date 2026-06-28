@@ -25,10 +25,10 @@ def example_basic_mounting():
     print("=" * 50)
 
     # 方式一: 字符串 (最简洁)
-    arm = Arm("A1", channel="can0", mounting="side_mount_left")
+    arm = Arm("A1R", channel="can0", mounting="side_mount_left")
 
     # 方式二: 枚举 (有 IDE 补全)
-    arm = Arm("A1", channel="can0", mounting=MountingPreset.SIDE_MOUNT_LEFT)
+    arm = Arm("A1R", channel="can0", mounting=MountingPreset.SIDE_MOUNT_LEFT)
 
     # 方式三: 完整配置 (可微调)
     config = MountingConfig(
@@ -36,7 +36,7 @@ def example_basic_mounting():
         yaw_offset_deg=2.0,    # 支架安装稍有偏斜，补偿 2°
         pitch_offset_deg=-1.0,  # 支架稍微前倾
     )
-    arm = Arm("A1", channel="can0", mounting=config)
+    arm = Arm("A1R", channel="can0", mounting=config)
 
     # 查看配置
     print(f"  安装方式: {arm.mounting.preset.value}")
@@ -52,7 +52,7 @@ def example_side_mount_freedrive():
 
     # 侧装左臂: 重力方向在基座系下为 [0, +9.81, 0]
     # SDK 自动设置 pinocchio 模型的重力方向
-    arm = Arm("A1", channel="can0", mounting="side_mount_left")
+    arm = Arm("A1R", channel="can0", mounting="side_mount_left")
     arm.enable()
 
     # freedrive 内部会调用 gravity_torques()
@@ -81,7 +81,7 @@ def example_world_frame():
 
     # world_frame=True: 所有坐标 API 自动转换到世界坐标系
     # 世界坐标系: X=前(远离操作员), Y=左, Z=上
-    arm = Arm("A1", channel="can0",
+    arm = Arm("A1R", channel="can0",
               mounting="side_mount_left",
               world_frame=True)
     arm.enable()
@@ -116,7 +116,7 @@ def example_tcp_offset():
     print("4. TCP 工具偏移")
     print("=" * 50)
 
-    arm = Arm("A1", channel="can0", mounting="side_mount_left")
+    arm = Arm("A1R", channel="can0", mounting="side_mount_left")
     arm.enable()
 
     # 无 TCP: get_pose 返回法兰坐标
@@ -145,7 +145,7 @@ def example_force_mode_side_mount():
     print("5. 侧装力控 (世界坐标系)")
     print("=" * 50)
 
-    arm = Arm("A1", channel="can0",
+    arm = Arm("A1R", channel="can0",
               mounting="side_mount_left",
               world_frame=True)
     arm.enable()

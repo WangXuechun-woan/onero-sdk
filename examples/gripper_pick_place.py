@@ -96,7 +96,7 @@ bus = CanBus("can0")
 gripper = CANGripper(bus, can_id=0x08, default_force=0x80)
 
 # Create arm with gripper attached
-arm = Arm("A1", channel="can0", end_effector=gripper)
+arm = Arm("A1R", channel="can0", end_effector=gripper)
 
 # Waypoints
 PRE_GRASP = [0.0, 0.8, 0.0, -1.0, 0.0, 0.5, 0.0]

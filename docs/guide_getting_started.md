@@ -17,7 +17,7 @@ from onero_sdk import Arm
 from onero_sdk.mujoco_backend import MujocoBackend
 
 # 无需硬件 — 仿真后端
-arm = Arm("A1", backend=MujocoBackend(model_name="A1"))
+arm = Arm("A1R", backend=MujocoBackend(model_name="A1R"))
 arm.enable()
 
 # 关节空间运动
@@ -36,7 +36,7 @@ arm.disable()
 连接真实硬件时只需改一行：
 
 ```python
-arm = Arm("A1", channel="can0")  # 替换 backend 参数
+arm = Arm("A1R", channel="can0")  # 替换 backend 参数
 ```
 
 ## 核心概念
@@ -72,7 +72,7 @@ A1 通常**侧装**在支架上 (Z 轴朝左或朝右)，而非直立。安装�
 
 ```python
 # 最常见：侧装左臂
-arm = Arm("A1", channel="can0", mounting="side_mount_left")
+arm = Arm("A1R", channel="can0", mounting="side_mount_left")
 
 # 所有预设
 from onero_sdk import MountingPreset
@@ -89,7 +89,7 @@ from onero_sdk import MountingPreset
 默认情况下，`get_pose()`/`movel()` 在基座坐标系下工作。开启 `world_frame` 后，所有笛卡尔 API 自动转换到世界坐标系：
 
 ```python
-arm = Arm("A1", channel="can0",
+arm = Arm("A1R", channel="can0",
           mounting="side_mount_left",
           world_frame=True)
 

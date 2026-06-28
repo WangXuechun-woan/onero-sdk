@@ -11,7 +11,7 @@ movec 通过 3 点定义圆弧: 起点(当前位置) → 经过点 → 终点。
 import numpy as np
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 try:

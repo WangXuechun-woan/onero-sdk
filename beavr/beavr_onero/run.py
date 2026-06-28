@@ -28,7 +28,7 @@ def main():
         description="BEAVR VR Teleoperation for Onero A1")
     parser.add_argument("--can-channel", type=str, default="can0",
                         help="CAN 通道 (default: can0)")
-    parser.add_argument("--model", type=str, default="A1",
+    parser.add_argument("--model", type=str, default="A1R",
                         help="机械臂型号")
     parser.add_argument("--mounting", type=str, default="side_mount_left",
                         choices=[m.value for m in MountingPreset],

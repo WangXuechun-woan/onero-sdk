@@ -51,8 +51,8 @@ def _angle_between_rotations(R0, R1):
 def arm_sim():
     from onero_sdk import Arm
     from onero_sdk.mujoco_backend import MujocoBackend
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend)
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend)
     arm.enable()
     yield arm
     arm.disable()

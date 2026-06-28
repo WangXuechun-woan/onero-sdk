@@ -13,8 +13,8 @@ def arm_sim():
     from onero_sdk import Arm
     from onero_sdk.mujoco_backend import MujocoBackend
 
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend)
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend)
     arm.enable()
     yield arm
     arm.disable()
@@ -27,8 +27,8 @@ def arm_side_mount():
     from onero_sdk import Arm
     from onero_sdk.mujoco_backend import MujocoBackend
 
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend, mounting="side_mount_left")
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend, mounting="side_mount_left")
     arm.enable()
     yield arm
     arm.disable()

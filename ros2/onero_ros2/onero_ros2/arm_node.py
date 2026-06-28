@@ -45,7 +45,7 @@ class OneroArmNode(Node):
 
         # Parameters
         self.declare_parameter("can_channel", "can0")
-        self.declare_parameter("model", "A1")
+        self.declare_parameter("model", "A1R")
         self.declare_parameter("kp", 50.0)
         self.declare_parameter("kd", 1.0)
         self.declare_parameter("control_rate", 200.0)

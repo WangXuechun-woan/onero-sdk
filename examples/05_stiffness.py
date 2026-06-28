@@ -14,7 +14,7 @@
 
 from onero_sdk import Arm, Stiffness
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 target = [0.0, -0.5, 0.3, -1.0, 0.0, 0.5, 0.0]

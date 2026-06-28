@@ -8,7 +8,7 @@ import time
 import math
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 freq = 100.0

@@ -4,6 +4,9 @@ Generate GIF animations for README documentation.
 Renders MuJoCo simulation offscreen with end-effector trail visualization,
 producing GIF files showing each major SDK feature in action.
 
+All demos use a workstation scene: arm side-mounted on a pillar with a
+table in the workspace (matching real desktop installation).
+
 All demos use the real SDK Arm API (same code path as real hardware).
 
 Usage:
@@ -29,7 +32,7 @@ import mujoco
 import imageio
 
 from onero_sdk import Arm
-from onero_sdk.mujoco_backend import MujocoBackend
+from onero_sdk.backend import ArmState
 from scipy.spatial.transform import Rotation
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), '..', 'docs', 'assets')
@@ -39,16 +42,234 @@ WIDTH = 640
 HEIGHT = 480
 FPS = 30
 
+# Default camera for workstation scene (front-left 3/4 view)
+DEFAULT_CAM_DISTANCE = 1.5
+DEFAULT_CAM_AZIMUTH = -120
+DEFAULT_CAM_ELEVATION = -20
+DEFAULT_CAM_LOOKAT = [0.2, -0.1, 0.5]
+
+
+# ─── Workstation Scene Backend ─────────────────────────────────────────────────
+
+class WorkstationBackend:
+    """
+    MuJoCo backend with workstation scene: pillar + table + side-mounted arm.
+
+    Builds the scene using MjSpec.attach() — same approach as DualMujocoBackend.
+    The arm is mounted on a pillar in side-mount configuration, with workspace
+    above a table (matching real desktop arm installations).
+    """
+
+    def __init__(self, model_name="A1R", control_dt=0.005, physics_dt=0.0005,
+                 realtime=False, armature=0.01, on_step=None):
+        self._control_dt = control_dt
+        self._physics_dt = physics_dt
+        self._substeps = max(1, int(round(control_dt / physics_dt)))
+        self._realtime = realtime
+        self._on_step = on_step
+        self._step_count = 0
+        self._nq = 7
+        self._enabled = False
+
+        self._model, self._data = self._build_scene(model_name, physics_dt, armature)
+
+        from onero_sdk.model_registry import get_model
+        model_info = get_model(model_name)
+        self._torque_limits = np.array([j.t_max for j in model_info.joints]) * 2.0
+
+        self.ee_body_id = mujoco.mj_name2id(
+            self._model, mujoco.mjtObj.mjOBJ_BODY, 'Link7')
+        self.link5_body_id = mujoco.mj_name2id(
+            self._model, mujoco.mjtObj.mjOBJ_BODY, 'Link5')
+        self.link4_body_id = mujoco.mj_name2id(
+            self._model, mujoco.mjtObj.mjOBJ_BODY, 'Link4')
+        self.link3_body_id = mujoco.mj_name2id(
+            self._model, mujoco.mjtObj.mjOBJ_BODY, 'Link3')
+
+    def _build_scene(self, model_name, physics_dt, armature):
+        """Build workstation scene: ground + table + pillar + side-mounted arm."""
+        from onero_sdk.model_registry import _parse_model_variant
+        base_model, variant = _parse_model_variant(model_name)
+        pkg_dir = os.path.dirname(os.path.abspath(__file__))
+        sdk_dir = os.path.join(pkg_dir, '..', 'onero_sdk')
+        urdf_dir = os.path.join(sdk_dir, 'urdf', base_model)
+        r_urdf = os.path.join(urdf_dir, f"{base_model.lower()}_{variant}.urdf")
+
+        spec = mujoco.MjSpec()
+        spec.compiler.meshdir = urdf_dir
+
+        # Ground plane
+        spec.worldbody.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_PLANE,
+            size=[2.0, 2.0, 0.01],
+            rgba=[0.92, 0.92, 0.90, 1.0],
+        )
+
+        # Lighting
+        spec.worldbody.add_light(pos=[0.5, 0.5, 2.0], dir=[-0.3, -0.3, -1])
+        spec.worldbody.add_light(pos=[-0.5, -0.5, 2.0], dir=[0.3, 0.3, -1])
+
+        # Table (in front and slightly right of pillar)
+        table = spec.worldbody.add_body(name='table', pos=[0.35, -0.15, 0.35])
+        table.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[0.30, 0.35, 0.02],
+            rgba=[0.6, 0.45, 0.3, 1.0],
+        )
+        for lx, ly in [(-0.25, -0.30), (-0.25, 0.30), (0.25, -0.30), (0.25, 0.30)]:
+            table.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+                size=[0.02, 0.17],
+                pos=[lx, ly, -0.17],
+                rgba=[0.5, 0.35, 0.2, 1.0],
+            )
+
+        # Pillar/Stand
+        pillar = spec.worldbody.add_body(name='pillar', pos=[0.0, 0.0, 0.0])
+        # Main column
+        pillar.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+            size=[0.04, 0.35],
+            pos=[0, 0, 0.35],
+            rgba=[0.4, 0.4, 0.45, 1.0],
+        )
+        # Base plate
+        pillar.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+            size=[0.10, 0.015],
+            pos=[0, 0, 0.015],
+            rgba=[0.35, 0.35, 0.4, 1.0],
+        )
+        # Top bracket
+        pillar.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[0.05, 0.05, 0.025],
+            pos=[0, 0, 0.70],
+            rgba=[0.35, 0.35, 0.4, 1.0],
+        )
+
+        # Mount site: euler=[90, 0, 180] makes arm reach forward & down
+        # Arm Z → world -Y (side-mount-right), workspace above table
+        mount_site = pillar.add_site(
+            name='arm_mount', pos=[0, 0, 0.70], euler=[90, 0, 180])
+
+        # Attach arm
+        arm_spec = mujoco.MjSpec.from_file(r_urdf)
+        spec.attach(arm_spec, prefix='', site=mount_site)
+
+        # Compile
+        model = spec.compile()
+        model.opt.timestep = physics_dt
+        model.dof_armature[:] = armature
+        # Disable contacts (arm-only, no environment interaction)
+        model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
+
+        data = mujoco.MjData(model)
+        return model, data
+
+    @property
+    def num_joints(self):
+        return self._nq
+
+    def enable(self):
+        self._enabled = True
+        mujoco.mj_resetData(self._model, self._data)
+        mujoco.mj_forward(self._model, self._data)
+        return self._get_state()
+
+    def disable(self):
+        self._data.qfrc_applied[:self._nq] = 0.0
+        self._enabled = False
+
+    def command(self, positions, velocities, kps, kds, torques):
+        pos_target = np.array(positions)
+        vel_target = np.array(velocities)
+        kp = np.array(kps)
+        kd = np.array(kds)
+        tau_ff = np.array(torques)
+
+        for _ in range(self._substeps):
+            q = self._data.qpos[:self._nq]
+            v = self._data.qvel[:self._nq]
+            tau = kp * (pos_target - q) + kd * (vel_target - v) + tau_ff
+            np.clip(tau, -self._torque_limits, self._torque_limits, out=tau)
+            self._data.qfrc_applied[:self._nq] = tau
+            mujoco.mj_step(self._model, self._data)
+
+        self._step_count += 1
+        if self._on_step and self._step_count % 10 == 0:
+            self._on_step()
+
+        return self._get_state()
+
+    def command_velocity(self, velocities):
+        vel_target = np.array(velocities)
+        kd_vel = 5.0
+
+        for _ in range(self._substeps):
+            v = self._data.qvel[:self._nq]
+            tau = kd_vel * (vel_target - v)
+            np.clip(tau, -self._torque_limits, self._torque_limits, out=tau)
+            self._data.qfrc_applied[:self._nq] = tau
+            mujoco.mj_step(self._model, self._data)
+
+        self._step_count += 1
+        if self._on_step and self._step_count % 10 == 0:
+            self._on_step()
+
+        return self._get_state()
+
+    def command_torque(self, torques):
+        tau = np.array(torques)
+        np.clip(tau, -self._torque_limits, self._torque_limits, out=tau)
+
+        for _ in range(self._substeps):
+            self._data.qfrc_applied[:self._nq] = tau
+            mujoco.mj_step(self._model, self._data)
+
+        self._step_count += 1
+        if self._on_step and self._step_count % 10 == 0:
+            self._on_step()
+
+        return self._get_state()
+
+    def get_state(self):
+        return self._get_state()
+
+    def close(self):
+        self._enabled = False
+
+    def reset(self, positions=None):
+        mujoco.mj_resetData(self._model, self._data)
+        if positions is not None:
+            self._data.qpos[:self._nq] = np.array(positions)
+        mujoco.mj_forward(self._model, self._data)
+        return self._get_state()
+
+    def _get_state(self):
+        return ArmState(
+            joints=list(self._data.qpos[:self._nq]),
+            velocities=list(self._data.qvel[:self._nq]),
+            torques=list(self._data.qfrc_applied[:self._nq]),
+            timestamp=self._data.time,
+        )
+
 
 # ─── Rendering helpers ──────────────────────────────────────────────────────
 
 def render_scene(renderer, model, data, trail_points=None,
-                 cam_distance=1.5, cam_azimuth=-120, cam_elevation=-25,
+                 cam_distance=None, cam_azimuth=None, cam_elevation=None,
                  cam_lookat=None, trail_color=None, trail_colors=None,
                  arrows=None):
     """Render with camera settings, trail visualization, and optional arrows."""
+    if cam_distance is None:
+        cam_distance = DEFAULT_CAM_DISTANCE
+    if cam_azimuth is None:
+        cam_azimuth = DEFAULT_CAM_AZIMUTH
+    if cam_elevation is None:
+        cam_elevation = DEFAULT_CAM_ELEVATION
     if cam_lookat is None:
-        cam_lookat = [0.0, 0.0, 0.3]
+        cam_lookat = DEFAULT_CAM_LOOKAT
     if trail_color is None:
         trail_color = [1.0, 1.0, 0.0, 1.0]
 
@@ -117,8 +338,8 @@ def render_scene(renderer, model, data, trail_points=None,
     return renderer.render().copy()
 
 
-def get_ee_pos(data, body_id=7):
-    """Get end-effector (Link7) world position."""
+def get_ee_pos(data, body_id):
+    """Get end-effector world position."""
     return data.xpos[body_id].copy()
 
 
@@ -139,7 +360,7 @@ class TrailRecorder:
     """Hook into backend.command to record trail and render frames."""
 
     def __init__(self, backend, renderer, trail_color=None, trail_colors_fn=None,
-                 cam_distance=1.5, cam_azimuth=-120, cam_elevation=-25,
+                 cam_distance=None, cam_azimuth=None, cam_elevation=None,
                  cam_lookat=None, arrows_fn=None):
         self.backend = backend
         self.renderer = renderer
@@ -156,10 +377,11 @@ class TrailRecorder:
         self._orig_command = backend.command
         self._orig_cmd_vel = backend.command_velocity
         self._orig_cmd_torque = backend.command_torque
-        self._cam_distance = cam_distance
-        self._cam_azimuth = cam_azimuth
-        self._cam_elevation = cam_elevation
-        self._cam_lookat = cam_lookat
+        self._cam_distance = cam_distance or DEFAULT_CAM_DISTANCE
+        self._cam_azimuth = cam_azimuth or DEFAULT_CAM_AZIMUTH
+        self._cam_elevation = cam_elevation or DEFAULT_CAM_ELEVATION
+        self._cam_lookat = cam_lookat or DEFAULT_CAM_LOOKAT
+        self._ee_body_id = backend.ee_body_id
 
     def start(self):
         self.backend.command = self._hook_command
@@ -172,7 +394,7 @@ class TrailRecorder:
         self.backend.command_torque = self._orig_cmd_torque
 
     def _record(self):
-        self.trail.append(get_ee_pos(self.data))
+        self.trail.append(get_ee_pos(self.data, self._ee_body_id))
         if self.trail_colors_fn:
             self.trail_colors.append(self.trail_colors_fn())
         self.step_count += 1
@@ -224,15 +446,23 @@ class TrailRecorder:
             self.frames.append(img)
 
 
+# ─── Helper: create standard workstation setup ─────────────────────────────
+
+def create_workstation():
+    """Create standard workstation backend + renderer + arm."""
+    backend = WorkstationBackend(model_name="A1R", control_dt=0.005, realtime=False)
+    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
+    arm = Arm("A1R", backend=backend)
+    arm.enable()
+    return backend, renderer, arm
+
+
 # ─── Demo generators ────────────────────────────────────────────────────────
 
 def demo_movej():
     """movej — joint-space motion with trapezoidal profile."""
     print("Generating movej.gif...")
-    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
-    arm = Arm("A1", backend=backend)
-    arm.enable()
+    backend, renderer, arm = create_workstation()
 
     rec = TrailRecorder(backend, renderer, trail_color=[1.0, 1.0, 0.0, 1.0])
     rec.start()
@@ -248,21 +478,18 @@ def demo_movej():
 def demo_movel():
     """movel — Cartesian straight-line with IK. Clear long straight path."""
     print("Generating movel.gif...")
-    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
-    arm = Arm("A1", backend=backend)
-    arm.enable()
+    backend, renderer, arm = create_workstation()
 
     arm.movej([0.0, -0.5, 0.0, -0.8, 0.0, 0.3, 0.0], duration=1.0)
 
-    start_ee = backend._data.xpos[7].copy()
+    # Get starting EE pose in base frame (invariant to mounting)
     fk = arm._get_fk()
-    _, start_rot = fk.get_ee_pose(arm.state.joints)
+    start_pos, start_rot = fk.get_ee_pose(arm.state.joints)
     start_rotvec = Rotation.from_matrix(start_rot).as_rotvec()
 
-    # Large straight-line motion (~200mm)
-    target_ee = start_ee + np.array([0.12, -0.06, 0.14])
-    pose_6d = np.concatenate([target_ee, start_rotvec])
+    # Target: large straight-line motion (~200mm) in base frame
+    target_pos = start_pos + np.array([0.12, -0.06, 0.14])
+    pose_6d = np.concatenate([target_pos, start_rotvec])
 
     rec = TrailRecorder(backend, renderer, trail_color=[0.0, 1.0, 0.0, 1.0])
     rec.start()
@@ -278,28 +505,21 @@ def demo_movel():
 def demo_movec():
     """movec — circular arc. Clear arc shape with same orientation throughout."""
     print("Generating movec.gif...")
-    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
-    arm = Arm("A1", backend=backend)
-    arm.enable()
+    backend, renderer, arm = create_workstation()
 
-    # Extended starting pose — larger reachable workspace for bigger arc
     arm.movej([0.0, -0.6, 0.0, -1.0, 0.0, 0.4, 0.0], duration=1.5)
 
-    start_ee = backend._data.xpos[7].copy()
     fk = arm._get_fk()
-    _, start_rot = fk.get_ee_pose(arm.state.joints)
+    start_pos, start_rot = fk.get_ee_pose(arm.state.joints)
     start_rotvec = Rotation.from_matrix(start_rot).as_rotvec()
 
-    # Reset IK solver to current config for accurate tracking
     ik = arm._get_ik()
     ik.reset(np.array(arm.state.joints))
 
-    # Large arc in XZ plane (~140mm chord, ~74mm radius)
-    via_pos = start_ee + np.array([0.06, 0.0, 0.10])
-    target_pos = start_ee + np.array([0.14, 0.0, 0.01])
+    # Arc in base frame (~140mm chord, ~74mm radius)
+    via_pos = start_pos + np.array([0.06, 0.0, 0.10])
+    target_pos = start_pos + np.array([0.14, 0.0, 0.01])
 
-    # Keep same rotation throughout (avoids IK divergence)
     via_pose = np.concatenate([via_pos, start_rotvec])
     target_pose = np.concatenate([target_pos, start_rotvec])
 
@@ -315,38 +535,26 @@ def demo_movec():
 
 
 def demo_servo_sine():
-    """servoj — real-time streaming. Sine wave clearly visible in EE path.
-
-    Drives joint 1 (shoulder) with sine to produce a clear vertical sine wave
-    while slowly advancing joint 0 (base rotation) for horizontal sweep.
-    """
+    """servoj — real-time streaming. Sine wave clearly visible in EE path."""
     print("Generating servo_sine.gif...")
-    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
-    arm = Arm("A1", backend=backend)
-    arm.enable()
+    backend, renderer, arm = create_workstation()
 
-    # Start at the exact first-frame pose so there's no initial jump
     base_pose = [-0.35, -0.6, 0.0, -1.0, 0.0, 0.4, 0.0]
     arm.movej(base_pose, duration=1.0)
 
     rec = TrailRecorder(backend, renderer, trail_color=[0.0, 0.5, 1.0, 1.0],
-                        cam_distance=1.6, cam_azimuth=-180, cam_elevation=-10,
-                        cam_lookat=[-0.3, 0.2, 0.35])
+                        cam_distance=1.6, cam_azimuth=-140, cam_elevation=-15,
+                        cam_lookat=[0.15, -0.1, 0.5])
     rec.start()
 
-    n = arm.num_joints
     duration = 5.0
     steps = int(duration / backend._control_dt)
 
     for step in range(steps):
         t = step * backend._control_dt
         joints = list(base_pose)
-        # Slow base rotation for horizontal sweep (full range)
         joints[0] = 0.7 * (t / duration) - 0.35
-        # Clear sine wave on shoulder → vertical oscillation (fewer cycles = clearer)
         joints[1] = base_pose[1] + 0.45 * math.sin(2 * math.pi * 0.8 * t)
-        # Elbow counter-motion to amplify EE displacement
         joints[3] = base_pose[3] - 0.2 * math.sin(2 * math.pi * 0.8 * t)
         arm.servoj(joints)
 
@@ -359,16 +567,9 @@ def demo_servo_sine():
 
 
 def demo_blending():
-    """Multi-segment blending: movel → movec → movel with smooth transitions.
-
-    Shows different trajectory types connected seamlessly — demonstrates
-    the SDK's ability to blend between straight lines and arcs smoothly.
-    """
+    """Multi-segment blending: movel → movec → movel with smooth transitions."""
     print("Generating blending.gif...")
-    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
-    arm = Arm("A1", backend=backend)
-    arm.enable()
+    backend, renderer, arm = create_workstation()
 
     arm.movej([0.0, -0.5, 0.0, -0.8, 0.0, 0.3, 0.0], duration=1.0)
 
@@ -392,18 +593,18 @@ def demo_blending():
     rec = TrailRecorder(backend, renderer, trail_colors_fn=color_fn)
     rec.start()
 
-    # Segment 1: movel straight line up-right (green) ~130mm
+    # Segment 1: movel straight line (green) ~130mm in base frame
     current_seg[0] = 0
-    ee = backend._data.xpos[7].copy()
-    target1 = ee + np.array([0.08, 0.0, 0.10])
+    pos, _ = fk.get_ee_pose(arm.state.joints)
+    target1 = pos + np.array([0.08, 0.0, 0.10])
     arm.movel(np.concatenate([target1, start_rotvec]), duration=2.0)
 
     # Segment 2: movec arc (orange) ~110mm chord
     current_seg[0] = 1
     ik.reset(np.array(arm.state.joints))
-    ee = backend._data.xpos[7].copy()
-    via_pos = ee + np.array([0.05, 0.02, 0.06])
-    target2 = ee + np.array([0.11, 0.0, 0.0])
+    pos, _ = fk.get_ee_pose(arm.state.joints)
+    via_pos = pos + np.array([0.05, 0.02, 0.06])
+    target2 = pos + np.array([0.11, 0.0, 0.0])
     arm.movec(
         np.concatenate([via_pos, start_rotvec]),
         np.concatenate([target2, start_rotvec]),
@@ -413,8 +614,8 @@ def demo_blending():
     # Segment 3: movel straight line in different direction (cyan) ~100mm
     current_seg[0] = 2
     ik.reset(np.array(arm.state.joints))
-    ee = backend._data.xpos[7].copy()
-    target3 = ee + np.array([0.0, -0.06, 0.08])
+    pos, _ = fk.get_ee_pose(arm.state.joints)
+    target3 = pos + np.array([0.0, -0.06, 0.08])
     arm.movel(np.concatenate([target3, start_rotvec]), duration=2.0)
 
     # Segment 4: return to start (magenta)
@@ -430,21 +631,12 @@ def demo_blending():
 
 
 def demo_force_mode():
-    """force_mode — hybrid force/position control.
-
-    Phase 1: Push EE down (force in Z) — visible downward motion.
-    Phase 2: Slide laterally while maintaining constant downward force.
-    Shows force arrow indicator pointing in force direction.
-    """
+    """force_mode — hybrid force/position control."""
     print("Generating force_mode.gif...")
-    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
-    arm = Arm("A1", backend=backend)
-    arm.enable()
+    backend, renderer, arm = create_workstation()
 
     arm.movej([0.0, -0.4, 0.0, -0.6, 0.0, 0.2, 0.0], duration=1.5)
 
-    # Force arrow state
     force_arrow = [None]
 
     def arrows_fn():
@@ -457,19 +649,20 @@ def demo_force_mode():
     rec.start()
 
     dt = backend._control_dt
+    ee_bid = backend.ee_body_id
 
     # Phase 1: Push down with large force (2.5s)
     steps_down = int(2.5 / dt)
     for step in range(steps_down):
         t = step * dt
-        fz = -30.0 * min(1.0, t / 0.5)  # ramp to -30N over 0.5s
+        fz = -30.0 * min(1.0, t / 0.5)
         arm.force_mode(
             selection=[0, 0, 1, 0, 0, 0],
             wrench=[0, 0, fz, 0, 0, 0],
             task_frame=[0, 0, 0, 0, 0, 0],
             limits=[0, 0, 0.25, 0, 0, 0],
         )
-        ee_pos = backend._data.xpos[7].copy()
+        ee_pos = get_ee_pos(backend._data, ee_bid)
         arrow_len = abs(fz) * 0.004
         force_arrow[0] = {
             'from': ee_pos,
@@ -477,19 +670,18 @@ def demo_force_mode():
             'color': [1.0, 0.2, 0.2, 1.0],
         }
 
-    # Phase 2: Slide in X while maintaining Z force (3.5s)
+    # Phase 2: Slide laterally while maintaining force (3.5s)
     steps_slide = int(3.5 / dt)
     for step in range(steps_slide):
-        t = step * dt
-        fx = 25.0  # constant lateral force
-        fz = -30.0  # maintain downward force
+        fx = 25.0
+        fz = -30.0
         arm.force_mode(
             selection=[1, 0, 1, 0, 0, 0],
             wrench=[fx, 0, fz, 0, 0, 0],
             task_frame=[0, 0, 0, 0, 0, 0],
             limits=[0.20, 0, 0.25, 0, 0, 0],
         )
-        ee_pos = backend._data.xpos[7].copy()
+        ee_pos = get_ee_pos(backend._data, ee_bid)
         force_arrow[0] = {
             'from': ee_pos,
             'to': ee_pos + np.array([fx * 0.005, 0, fz * 0.005]),
@@ -507,17 +699,9 @@ def demo_force_mode():
 
 
 def demo_freedrive():
-    """freedrive — teach mode + replay + 2x replay.
-
-    Phase 1 (magenta): Simulated human dragging the arm (gravity-compensated).
-    Phase 2 (green): Replay at 1x speed — same trajectory.
-    Phase 3 (cyan): Replay at 2x speed — faster but same path.
-    """
+    """freedrive — teach mode + replay + 2x replay."""
     print("Generating freedrive.gif...")
-    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
-    arm = Arm("A1", backend=backend)
-    arm.enable()
+    backend, renderer, arm = create_workstation()
 
     start_pose = [0.2, -0.4, 0.1, -0.6, 0.0, 0.2, 0.0]
     arm.movej(start_pose, duration=1.0)
@@ -544,14 +728,16 @@ def demo_freedrive():
 
     arm.start_recording()
 
+    link5_bid = backend.link5_body_id
+    ee_bid = backend.ee_body_id
+
     for step in range(steps):
         t = step * backend._control_dt
-        # Gentle forces to produce smooth trajectory (stays within rate limits at 2x)
-        backend._data.xfrc_applied[5] = [
+        backend._data.xfrc_applied[link5_bid] = [
             1.2 * math.sin(2 * math.pi * 0.2 * t),
             0.8 * math.sin(2 * math.pi * 0.15 * t),
             0.6 * math.cos(2 * math.pi * 0.12 * t), 0, 0, 0]
-        backend._data.xfrc_applied[7] = [
+        backend._data.xfrc_applied[ee_bid] = [
             0.6 * math.sin(2 * math.pi * 0.25 * t + 2.0),
             0, 0.5 * math.cos(2 * math.pi * 0.18 * t), 0, 0, 0]
 
@@ -562,8 +748,7 @@ def demo_freedrive():
     backend._data.xfrc_applied[:] = 0
     recording = arm.stop_recording()
 
-    # Fix timestamps: in non-realtime sim, wall-clock is compressed.
-    # Rescale to actual simulation time (control_dt per frame).
+    # Fix timestamps for non-realtime sim
     from onero_sdk.trajectory import Recording, RecordedFrame
     fixed_frames = []
     for i, f in enumerate(recording.frames):
@@ -596,18 +781,10 @@ def demo_freedrive():
 
 
 def demo_speed_control():
-    """speedj + speedl — joint velocity (arc) vs Cartesian velocity (straight line).
-
-    Shows the difference: speedj produces an arc at EE (joint-space velocity),
-    while speedl produces a straight line (Cartesian-space velocity).
-    """
+    """speedj + speedl — joint velocity vs Cartesian velocity."""
     print("Generating speedj.gif...")
-    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
-    arm = Arm("A1", backend=backend)
-    arm.enable()
+    backend, renderer, arm = create_workstation()
 
-    # Track current segment color
     current_color = [None]
     color_cyan = [0.0, 1.0, 0.8, 1.0]
     color_yellow = [1.0, 1.0, 0.0, 1.0]
@@ -633,17 +810,9 @@ def demo_speed_control():
 
 
 def demo_impedance():
-    """Impedance control — compliant response to external perturbation.
-
-    Shows the arm at a target pose resisting perturbation with low stiffness,
-    creating visible spring-like deflection and recovery.
-    Uses xfrc_applied (body-level external force) to simulate real perturbation.
-    """
+    """Impedance control — compliant response to external perturbation."""
     print("Generating impedance.gif...")
-    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
-    arm = Arm("A1", backend=backend)
-    arm.enable()
+    backend, renderer, arm = create_workstation()
 
     init_pose = [0.3, -0.5, 0.2, -0.8, 0.2, 0.2, 0.0]
     arm.movej(init_pose, duration=1.5)
@@ -655,13 +824,15 @@ def demo_impedance():
     duration = 4.0
     steps = int(duration / backend._control_dt)
 
+    link5_bid = backend.link5_body_id
+    link3_bid = backend.link3_body_id
+
     for step in range(steps):
         t = step * backend._control_dt
-        # External force on Link5 body (simulates human/object pushing)
-        backend._data.xfrc_applied[5] = [
+        backend._data.xfrc_applied[link5_bid] = [
             5.0 * math.sin(2 * math.pi * 0.3 * t), 0,
             5.0 * math.cos(2 * math.pi * 0.4 * t), 0, 0, 0]
-        backend._data.xfrc_applied[3] = [
+        backend._data.xfrc_applied[link3_bid] = [
             0, 3.5 * math.sin(2 * math.pi * 0.5 * t), 0, 0, 0, 0]
 
         g = arm.gravity_torque()
@@ -677,21 +848,10 @@ def demo_impedance():
 
 
 def demo_nullspace():
-    """Null-space motion — 7-DOF redundancy demonstration.
-
-    The arm reconfigures dramatically (elbow moves ~220mm) while the
-    end-effector stays perfectly fixed in space (<4mm drift). Uses the
-    real IK solver to maintain EE constraint — same approach as on hardware.
-
-    Green dot: EE (stays fixed). Magenta trail: elbow (moves freely).
-    """
+    """Null-space motion — 7-DOF redundancy demonstration."""
     print("Generating nullspace.gif...")
-    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
-    arm = Arm("A1", backend=backend)
-    arm.enable()
+    backend, renderer, arm = create_workstation()
 
-    # More bent config gives larger null-space motion range
     arm.movej([0.0, -1.0, 0.0, -1.5, 0.0, 0.5, 0.0], duration=1.5)
 
     dynamics = arm._get_dynamics()
@@ -700,24 +860,23 @@ def demo_nullspace():
     dt = backend._control_dt
     n = arm.num_joints
 
-    # Joint limits with safety margin
     q_min = np.array([-1.04, -3.14, -1.04, -3.14, -1.04, -3.14, -1.04])
     q_max = np.array([3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14])
     margin = 0.1
 
-    # Lock EE target using FK (same as user would do)
     ee_target_pos, ee_target_rot = fk.get_ee_pose(list(arm.state.joints))
 
-    # Multiple excitation directions for richer null-space exploration
     q_excite1 = np.array([0.4, -0.3, 1.2, 0.3, -1.0, 0.15, 0.6])
     q_excite2 = np.array([-0.3, 0.5, -0.6, 1.0, 0.4, -0.7, 0.3])
     q_current = np.array(arm.state.joints)
-    ee_fixed_pos = get_ee_pos(backend._data, body_id=7)
+    ee_fixed_pos = get_ee_pos(backend._data, backend.ee_body_id)
 
     elbow_trail = []
     frames = []
     render_every = max(1, int(1.0 / (FPS * dt)))
     step_count = 0
+
+    link4_bid = backend.link4_body_id
 
     duration = 15.0
     steps = int(duration / dt)
@@ -736,14 +895,13 @@ def demo_nullspace():
         q_candidate = q_current + dq_null * dt
         q_candidate = np.clip(q_candidate, q_min + margin, q_max - margin)
 
-        # IK solver corrects back to target EE pose
         ik.reset(q_candidate)
         q_current = np.array(ik.solve(ee_target_pos, ee_target_rot, dt=dt))
 
         arm.servoj(list(q_current), kp=100.0, kd=2.0)
 
         if step % 3 == 0:
-            elbow_trail.append(backend._data.xpos[4].copy())
+            elbow_trail.append(backend._data.xpos[link4_bid].copy())
 
         step_count += 1
         if step_count % render_every == 0:
@@ -756,9 +914,10 @@ def demo_nullspace():
                 renderer, backend._model, backend._data,
                 trail_points=trail_pts,
                 trail_colors=trail_cols,
-                cam_distance=1.3,
+                cam_distance=1.4,
                 cam_azimuth=-130,
                 cam_elevation=-20,
+                cam_lookat=DEFAULT_CAM_LOOKAT,
             )
             frames.append(img)
 
@@ -773,9 +932,10 @@ def demo_nullspace():
             renderer, backend._model, backend._data,
             trail_points=trail_pts,
             trail_colors=trail_cols,
-            cam_distance=1.3,
+            cam_distance=1.4,
             cam_azimuth=-130,
             cam_elevation=-20,
+            cam_lookat=DEFAULT_CAM_LOOKAT,
         )
         frames.append(img)
 
@@ -787,10 +947,7 @@ def demo_nullspace():
 def demo_trajectory_profiles():
     """Trajectory profiles — trapezoidal velocity profile with large motion."""
     print("Generating trajectory_profiles.gif...")
-    backend = MujocoBackend(model_name="A1", control_dt=0.005, realtime=False)
-    renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
-    arm = Arm("A1", backend=backend)
-    arm.enable()
+    backend, renderer, arm = create_workstation()
 
     target = [0.8, -0.7, 0.4, -1.2, 0.3, 0.2, -0.15]
 
@@ -810,7 +967,7 @@ def demo_dual_arm():
     print("Generating dual_arm.gif...")
     from onero_sdk.dual_mujoco_backend import DualMujocoBackend
 
-    backend = DualMujocoBackend(model_name="A1", realtime=False, control_dt=0.005)
+    backend = DualMujocoBackend(model_name="A1R", realtime=False, control_dt=0.005)
     renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
 
     frames = []
@@ -866,7 +1023,7 @@ ALL_DEMOS = {
 
 def main():
     print("=" * 60)
-    print("  Generating README GIF animations (offscreen rendering)")
+    print("  Generating README GIF animations (workstation scene)")
     print("=" * 60)
     print()
 

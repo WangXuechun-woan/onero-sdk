@@ -132,28 +132,28 @@ class TestModelReflectedInertia:
     def test_a1_model_has_gear_ratios(self):
         """A1 model has 7 gear ratios defined."""
         from onero_sdk.model_registry import get_model
-        model = get_model("A1")
+        model = get_model("A1R")
         assert model.gear_ratios is not None
         assert len(model.gear_ratios) == 7
 
     def test_a1_gear_ratios_values(self):
         """A1 gear ratios match spec: joints 1-3 = 48.19, joints 4-7 = 10."""
         from onero_sdk.model_registry import get_model
-        model = get_model("A1")
+        model = get_model("A1R")
         assert model.gear_ratios[:3] == [48.19, 48.19, 48.19]
         assert model.gear_ratios[3:] == [10.0, 10.0, 10.0, 10.0]
 
     def test_a1_model_has_rotor_inertias(self):
         """A1 model has 7 rotor inertias defined."""
         from onero_sdk.model_registry import get_model
-        model = get_model("A1")
+        model = get_model("A1R")
         assert model.rotor_inertias is not None
         assert len(model.rotor_inertias) == 7
 
     def test_rotor_inertias_are_positive(self):
         """All rotor inertias are positive physical values."""
         from onero_sdk.model_registry import get_model
-        model = get_model("A1")
+        model = get_model("A1R")
         for i, inertia in enumerate(model.rotor_inertias):
             assert inertia > 0, f"Joint {i}: rotor_inertia={inertia} <= 0"
 
@@ -163,8 +163,8 @@ class TestModelReflectedInertia:
         from onero_sdk import Arm
         from onero_sdk.mujoco_backend import MujocoBackend
 
-        backend = MujocoBackend(model_name="A1")
-        arm = Arm("A1", backend=backend)
+        backend = MujocoBackend(model_name="A1R")
+        arm = Arm("A1R", backend=backend)
 
         assert arm._reflected_inertia is not None
         # Joint 1: 4.5e-6 × 48.19² ≈ 0.01045
@@ -189,8 +189,8 @@ class TestPayloadEstimation:
     def arm_sim(self):
         from onero_sdk import Arm
         from onero_sdk.mujoco_backend import MujocoBackend
-        backend = MujocoBackend(model_name="A1")
-        arm = Arm("A1", backend=backend)
+        backend = MujocoBackend(model_name="A1R")
+        arm = Arm("A1R", backend=backend)
         arm.enable()
         arm.movej([0.0, -0.5, 0.0, -1.0, 0.0, 0.5, 0.0], duration=2.0)
         yield arm
@@ -243,8 +243,8 @@ class TestAutoPayload:
     def arm_sim(self):
         from onero_sdk import Arm
         from onero_sdk.mujoco_backend import MujocoBackend
-        backend = MujocoBackend(model_name="A1")
-        arm = Arm("A1", backend=backend)
+        backend = MujocoBackend(model_name="A1R")
+        arm = Arm("A1R", backend=backend)
         arm.enable()
         arm.movej([0.0, -0.5, 0.0, -1.0, 0.0, 0.5, 0.0], duration=2.0)
         yield arm

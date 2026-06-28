@@ -114,7 +114,7 @@ ros2 launch onero_ros2 bringup.launch.py can_channel:=can0
 # 带参数启动
 ros2 launch onero_ros2 bringup.launch.py \
     can_channel:=can0 \
-    model:=A1 \
+    model:=A1R \
     control_freq:=200 \
     kp:=80.0 \
     kd:=2.0
@@ -234,7 +234,7 @@ ros2 param set /onero_arm_driver kd 3.0
 | 参数名 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `can_channel` | string | "can0" | CAN 接口名 |
-| `model` | string | "A1" | 机械臂型号 |
+| `model` | string | "A1R" | 机械臂型号 |
 | `control_freq` | int | 200 | 控制频率 (Hz) |
 | `kp` | double | 80.0 | 位置增益 |
 | `kd` | double | 2.0 | 速度增益 |

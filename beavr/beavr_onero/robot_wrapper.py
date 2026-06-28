@@ -52,7 +52,7 @@ class OneroA1Config:
 
     # 硬件
     can_channel: str = "can0"
-    model: str = "A1"
+    model: str = "A1R"
 
     # 位移缩放 (VR 空间 → A1 工作空间)
     # Meta Quest 手柄活动范围约 ±0.5m, A1 工作空间约 ±0.4m

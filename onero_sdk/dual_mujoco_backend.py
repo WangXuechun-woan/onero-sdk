@@ -31,7 +31,7 @@ class DualMujocoBackend:
     Joint ordering: right arm [0:7], left arm [7:14].
     """
 
-    def __init__(self, model_name: str = "A1", realtime: bool = True,
+    def __init__(self, model_name: str = "A1R", realtime: bool = True,
                  control_dt: float = 0.005, physics_dt: float = 0.0005,
                  armature: float = 0.01):
         if mujoco is None:
@@ -54,10 +54,12 @@ class DualMujocoBackend:
 
     def _build_scene(self, model_name: str, physics_dt: float, armature: float):
         """Build composite MuJoCo scene with torso + two arms."""
+        from .model_registry import _parse_model_variant
+        base_model, _ = _parse_model_variant(model_name)
         pkg_dir = os.path.dirname(os.path.abspath(__file__))
-        urdf_dir = os.path.join(pkg_dir, "urdf", model_name)
-        r_urdf = os.path.join(urdf_dir, f"{model_name.lower()}_r.urdf")
-        l_urdf = os.path.join(urdf_dir, f"{model_name.lower()}_l.urdf")
+        urdf_dir = os.path.join(pkg_dir, "urdf", base_model)
+        r_urdf = os.path.join(urdf_dir, f"{base_model.lower()}_r.urdf")
+        l_urdf = os.path.join(urdf_dir, f"{base_model.lower()}_l.urdf")
 
         spec = mujoco.MjSpec()
         spec.compiler.meshdir = urdf_dir

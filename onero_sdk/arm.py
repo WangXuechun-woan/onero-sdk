@@ -43,16 +43,16 @@ class Arm(ArmTransformsMixin):
     Robotic arm controller (N-DOF, determined by model registry).
 
     Create with a model name + CAN channel (real hardware):
-        arm = Arm("A1", channel="can0")
+        arm = Arm("A1R", channel="can0")
 
     Or with a custom backend (simulation, etc.):
-        arm = Arm("A1", backend=my_backend)
+        arm = Arm("A1R", backend=my_backend)
 
     Or from a config file:
         arm = Arm.from_config("arm.yaml")
     """
 
-    def __init__(self, model: str = "A1", channel: Optional[str] = None,
+    def __init__(self, model: str = "A1R", channel: Optional[str] = None,
                  backend: Optional[ArmBackend] = None,
                  safety: Optional[SafetyConfig] = None,
                  end_effector: Optional[EndEffector] = None,
@@ -61,7 +61,7 @@ class Arm(ArmTransformsMixin):
                  world_frame: bool = False):
         """
         Args:
-            model: Arm model name (e.g. "A1"). Looked up in model registry.
+            model: Arm model name (e.g. "A1R", "A1L"). Looked up in model registry.
             channel: CAN channel name (e.g. "can0"). Creates a CAN backend.
                      Mutually exclusive with `backend`.
             backend: Custom backend instance. Mutually exclusive with `channel`.
@@ -1338,7 +1338,7 @@ class Arm(ArmTransformsMixin):
         Create an Arm from a YAML config file.
 
         Config format:
-            model: "A1"
+            model: "A1R"
             channel: "can0"
             safety:
               max_velocity: 5.0
@@ -1352,7 +1352,7 @@ class Arm(ArmTransformsMixin):
         with open(path, 'r') as f:
             raw = yaml.safe_load(f)
 
-        model = raw.get("model", "A1")
+        model = raw.get("model", "A1R")
         channel = raw.get("channel")
         backend = kwargs.get("backend")
 
@@ -2056,13 +2056,15 @@ class Arm(ArmTransformsMixin):
     def _find_urdf(self) -> Optional[str]:
         """Find URDF path for this model."""
         import os
+        from .model_registry import _parse_model_variant
         pkg_dir = os.path.dirname(os.path.abspath(__file__))
         name = self._model_info.name
+        base_model, variant = _parse_model_variant(name)
         candidates = [
-            # Packaged URDFs (inside onero_sdk/urdf/ — works after pip install)
-            os.path.join(pkg_dir, "urdf", name, f"{name.lower()}_r.urdf"),
-            os.path.join(pkg_dir, "urdf", name, f"{name.lower()}_l.urdf"),
-            os.path.join(pkg_dir, "urdf", f"{name.lower()}.urdf"),
+            os.path.join(pkg_dir, "urdf", base_model, f"{base_model.lower()}_{variant}.urdf"),
+            os.path.join(pkg_dir, "urdf", base_model, f"{base_model.lower()}_r.urdf"),
+            os.path.join(pkg_dir, "urdf", base_model, f"{base_model.lower()}_l.urdf"),
+            os.path.join(pkg_dir, "urdf", f"{base_model.lower()}.urdf"),
         ]
         for path in candidates:
             if os.path.exists(path):

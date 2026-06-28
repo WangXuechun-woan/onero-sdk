@@ -54,7 +54,7 @@ pip install -e ".[full]"      # everything
 ```python
 from onero_sdk import Arm
 
-with Arm("A1", channel="can0") as arm:
+with Arm("A1R", channel="can0") as arm:
     # Specify duration directly
     arm.movej([0.0, 0.5, 0.0, -0.3, 0.0, 0.0, 0.0], duration=3.0)
 
@@ -78,7 +78,7 @@ with Arm("A1", channel="can0") as arm:
 import numpy as np
 from onero_sdk import Arm
 
-with Arm("A1", channel="can0") as arm:
+with Arm("A1R", channel="can0") as arm:
     # With duration
     arm.movel(position=[0.3, 0.0, 0.2], rotation=np.eye(3), duration=3.0)
 
@@ -100,7 +100,7 @@ with Arm("A1", channel="can0") as arm:
 import time, math
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 try:
@@ -127,7 +127,7 @@ finally:
 ```python
 from onero_sdk import Arm
 
-with Arm("A1", channel="can0") as arm:
+with Arm("A1R", channel="can0") as arm:
     # Move joint 1 at 0.5 rad/s for 3 seconds (with acceleration ramp)
     arm.speedj([0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0], acceleration=1.0, duration=3.0)
 
@@ -149,7 +149,7 @@ with Arm("A1", channel="can0") as arm:
 import time
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # Record while in freedrive (all axes free)
@@ -187,7 +187,7 @@ planner.add_waypoint(Waypoint(joints=[0.0, 0.5, 0.0, -0.3, 0.0, 0.0, 0.0], durat
 planner.add_waypoint(Waypoint(joints=[0.3, 0.8, 0.2, -0.5, 0.0, 0.1, 0.0], duration=2.0, blend=0.3))
 planner.add_waypoint(Waypoint(joints=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], duration=2.0))
 
-with Arm("A1", channel="can0") as arm:
+with Arm("A1R", channel="can0") as arm:
     frames = planner.compute(arm.state.joints)
     arm.execute_trajectory(frames)
 ```
@@ -206,7 +206,7 @@ with Arm("A1", channel="can0") as arm:
 import time
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 try:
@@ -240,7 +240,7 @@ finally:
 ```python
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 try:
@@ -266,7 +266,7 @@ from onero_sdk.safety import SafetyConfig
 
 # Configure collision threshold (Nm)
 safety = SafetyConfig(collision_threshold=5.0, collision_stop=True)
-arm = Arm("A1", channel="can0", safety=safety)
+arm = Arm("A1R", channel="can0", safety=safety)
 arm.enable()
 
 # Manual check (useful when collision_stop=False)
@@ -284,7 +284,7 @@ if collision:
 ```python
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # Set tool payload for accurate dynamics
@@ -301,7 +301,7 @@ arm.set_payload(mass=0.5, cog=[0.0, 0.0, 0.05])
 ```python
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # Estimate external force/torque at end-effector
@@ -324,7 +324,7 @@ print(f"Force: {wrench[:3]}, Torque: {wrench[3:]}")
 import numpy as np
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # End-effector Jacobian (6x7) in world frame
@@ -360,7 +360,7 @@ arm.servoj(arm.state.joints, kp=0, kd=0, tau_ff=tau.tolist())
 import numpy as np
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 dynamics = arm._get_dynamics()
@@ -405,7 +405,7 @@ arm.disable()
 ```python
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # Calibrate dynamics parameters (improves gravity comp accuracy)
@@ -426,7 +426,7 @@ arm.disable()
 ```python
 from onero_sdk import Arm, KinematicCalibrator
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # Touch a fixed reference point (e.g. table corner) from different arm configs
@@ -459,7 +459,7 @@ arm.disable()
 ```python
 from onero_sdk import Arm, TrapezoidalProfile, RuckigPlanner, TimeOptimalPlanner
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # 1. Trapezoidal / S-curve profile (built-in, no extra deps)
@@ -517,7 +517,7 @@ backend.movej(r_forward, l_forward, duration=2.0)
 ```python
 from onero_sdk import DualArm
 
-with DualArm.create("A1", left_channel="can0", right_channel="can1") as dual:
+with DualArm.create("A1R", left_channel="can0", right_channel="can1") as dual:
     dual.movej(
         left_joints=[0.0, 0.5, 0.0, -0.3, 0.0, 0.0, 0.0],
         right_joints=[0.0, -0.5, 0.0, 0.3, 0.0, 0.0, 0.0],
@@ -559,7 +559,7 @@ class MyGripper(Gripper):
 bus = CanBus("can0")
 gripper = MyGripper(bus, can_id=0x08)
 
-with Arm("A1", channel="can0", end_effector=gripper) as arm:
+with Arm("A1R", channel="can0", end_effector=gripper) as arm:
     arm.movej([0.0, 0.8, 0.0, -1.0, 0.0, 0.5, 0.0], duration=2.0)
     arm.gripper.open()
     arm.movej([0.0, 1.0, 0.0, -1.2, 0.0, 0.5, 0.0], duration=1.5)
@@ -602,14 +602,14 @@ sudo slcand -o -s8 /dev/ttyACM0 can0 && sudo ip link set up can0
 Minimal config (`configs/a1.yaml`):
 
 ```yaml
-model: "A1"
+model: "A1R"
 channel: "can0"
 ```
 
 Or create directly in code:
 
 ```python
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm = Arm.from_config("configs/a1.yaml")
 ```
 

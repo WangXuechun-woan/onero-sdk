@@ -6,7 +6,7 @@ from onero_sdk import DualArm
 
 # Create dual arm from channels
 dual = DualArm.create(
-    model="A1",
+    model="A1R",
     left_channel="can0",
     right_channel="can1",
 )

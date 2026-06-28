@@ -1,5 +1,5 @@
 # Single A1 arm configuration
-model: "A1"
+model: "A1R"
 channel: "can0"
 
 # Control gains (optional — defaults from model registry)

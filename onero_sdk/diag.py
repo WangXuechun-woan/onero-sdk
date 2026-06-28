@@ -35,7 +35,7 @@ def check_urdf() -> bool:
     try:
         from .arm import Arm
         from .model_registry import get_model
-        model_info = get_model("A1")
+        model_info = get_model("A1R")
         # Use same path logic as Arm._find_urdf
         import os
         pkg_dir = os.path.dirname(os.path.abspath(__file__))

@@ -20,8 +20,8 @@ from onero_sdk.gain_policy import Stiffness
 
 def test_basic_enable_disable():
     """Test arm enable/disable lifecycle."""
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend)
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend)
 
     arm.enable()
     assert arm.state is not None
@@ -34,8 +34,8 @@ def test_basic_enable_disable():
 
 def test_movej():
     """Test joint space motion with convergence check."""
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend)
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend)
     arm.enable()
 
     target = [0.0, -0.5, 0.3, 0.5, -0.2, 0.3, 0.0]
@@ -54,8 +54,8 @@ def test_movej():
 
 def test_movej_adaptive_gains():
     """Test that adaptive gains produce better tracking than fixed weak gains."""
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend)
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend)
     arm.enable()
 
     target = [0.0, -0.8, 0.5, 0.8, -0.3, 0.4, 0.0]
@@ -82,8 +82,8 @@ def test_movej_adaptive_gains():
 
 def test_movej_stiffness_presets():
     """Verify different stiffness presets produce different tracking behavior."""
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend)
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend)
 
     target = [0.0, -0.6, 0.4, 0.6, -0.2, 0.3, 0.0]
     errors = {}
@@ -107,8 +107,8 @@ def test_movej_stiffness_presets():
 
 def test_servoj():
     """Test real-time servo control frame by frame."""
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend)
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend)
     arm.enable()
 
     # Sine wave on joint 1
@@ -132,8 +132,8 @@ def test_servoj():
 
 def test_speedj():
     """Test joint velocity control."""
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend)
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend)
     arm.enable()
 
     # Move joint 1 at 0.5 rad/s for 1 second
@@ -150,8 +150,8 @@ def test_speedj():
 
 def test_safety_clamping():
     """Test that safety limits prevent exceeding joint bounds."""
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend)
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend)
     arm.enable()
 
     # Try to move beyond joint limits (joint 0 limit is [-1.04, 3.14])
@@ -167,8 +167,8 @@ def test_safety_clamping():
 
 def test_simulation_speed():
     """Benchmark simulation throughput."""
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend)
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend)
     arm.enable()
 
     target = [0.0, -0.5, 0.3, 0.5, -0.2, 0.3, 0.0]
@@ -185,8 +185,8 @@ def test_simulation_speed():
 
 def test_multiple_movej():
     """Test sequential motions."""
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend)
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend)
     arm.enable()
 
     waypoints = [

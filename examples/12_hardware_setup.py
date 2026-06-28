@@ -54,7 +54,7 @@ CAN 硬件设置 — 使用 SDK 前的硬件准备。
 from onero_sdk import Arm
 
 # 真机连接
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 print(f"关节数: {arm.num_joints}")
@@ -81,5 +81,5 @@ arm.disable()
 # Q: 想不连硬件测试代码？
 # A: 使用 MuJoCo 仿真:
 #      from onero_sdk.mujoco_backend import MujocoBackend
-#      backend = MujocoBackend(model="A1")
-#      arm = Arm("A1", backend=backend)
+#      backend = MujocoBackend(model="A1R")
+#      arm = Arm("A1R", backend=backend)

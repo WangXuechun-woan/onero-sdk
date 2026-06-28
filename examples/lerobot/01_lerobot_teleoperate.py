@@ -23,8 +23,8 @@ from lerobot_robot_onero import OneroRobot, OneroRobotConfig
 from lerobot_teleoperator_onero import OneroTeleop, OneroTeleopConfig
 
 # 配置
-robot_config = OneroRobotConfig(can_channel="can0", model="A1")
-teleop_config = OneroTeleopConfig(leader_channel="can1", model="A1", damping=0.3)
+robot_config = OneroRobotConfig(can_channel="can0", model="A1R")
+teleop_config = OneroTeleopConfig(leader_channel="can1", model="A1R", damping=0.3)
 
 # 创建设备
 robot = OneroRobot(robot_config)

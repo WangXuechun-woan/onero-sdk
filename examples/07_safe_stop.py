@@ -12,7 +12,7 @@ import time
 import threading
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 try:
@@ -43,7 +43,7 @@ try:
     import threading
     from onero_sdk import Arm
 
-    arm = Arm("A1", channel="can0")
+    arm = Arm("A1R", channel="can0")
     arm.enable()
 
     # 方式 1: arm.stop() — 减速停止（推荐）

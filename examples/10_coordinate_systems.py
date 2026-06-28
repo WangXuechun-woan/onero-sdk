@@ -20,7 +20,7 @@ IK (逆运动学): 末端位姿 → 关节角
 import numpy as np  # noqa: F401 (kept for user experimentation)
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 try:

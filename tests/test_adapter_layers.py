@@ -712,7 +712,7 @@ class TestCrossAdapterConsistency:
 
         # LeRobot features
         from onero_sdk.model_registry import get_model
-        model = get_model("A1")
+        model = get_model("A1R")
         assert model.num_joints == 7
 
 

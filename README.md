@@ -54,7 +54,7 @@ pip install -e ".[full]"      # 全部安装
 ```python
 from onero_sdk import Arm
 
-with Arm("A1", channel="can0") as arm:
+with Arm("A1R", channel="can0") as arm:
     # 指定运动时间
     arm.movej([0.0, 0.5, 0.0, -0.3, 0.0, 0.0, 0.0], duration=3.0)
 
@@ -78,7 +78,7 @@ with Arm("A1", channel="can0") as arm:
 import numpy as np
 from onero_sdk import Arm
 
-with Arm("A1", channel="can0") as arm:
+with Arm("A1R", channel="can0") as arm:
     # 指定时间
     arm.movel(position=[0.3, 0.0, 0.2], rotation=np.eye(3), duration=3.0)
 
@@ -100,7 +100,7 @@ with Arm("A1", channel="can0") as arm:
 import time, math
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 try:
@@ -127,7 +127,7 @@ finally:
 ```python
 from onero_sdk import Arm
 
-with Arm("A1", channel="can0") as arm:
+with Arm("A1R", channel="can0") as arm:
     # 关节1以0.5 rad/s运动3秒（带加速斜坡）
     arm.speedj([0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0], acceleration=1.0, duration=3.0)
 
@@ -149,7 +149,7 @@ with Arm("A1", channel="can0") as arm:
 import time
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # 示教模式下录制（全轴自由）
@@ -187,7 +187,7 @@ planner.add_waypoint(Waypoint(joints=[0.0, 0.5, 0.0, -0.3, 0.0, 0.0, 0.0], durat
 planner.add_waypoint(Waypoint(joints=[0.3, 0.8, 0.2, -0.5, 0.0, 0.1, 0.0], duration=2.0, blend=0.3))
 planner.add_waypoint(Waypoint(joints=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], duration=2.0))
 
-with Arm("A1", channel="can0") as arm:
+with Arm("A1R", channel="can0") as arm:
     frames = planner.compute(arm.state.joints)
     arm.execute_trajectory(frames)
 ```
@@ -206,7 +206,7 @@ with Arm("A1", channel="can0") as arm:
 import time
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 try:
@@ -240,7 +240,7 @@ finally:
 ```python
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 try:
@@ -266,7 +266,7 @@ from onero_sdk.safety import SafetyConfig
 
 # 配置碰撞阈值 (Nm)
 safety = SafetyConfig(collision_threshold=5.0, collision_stop=True)
-arm = Arm("A1", channel="can0", safety=safety)
+arm = Arm("A1R", channel="can0", safety=safety)
 arm.enable()
 
 # 手动检查（collision_stop=False 时有用）
@@ -284,7 +284,7 @@ if collision:
 ```python
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # 设置工具负载以提高动力学精度
@@ -301,7 +301,7 @@ arm.set_payload(mass=0.5, cog=[0.0, 0.0, 0.05])
 ```python
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # 估计末端执行器受到的外力/力矩
@@ -324,7 +324,7 @@ print(f"力: {wrench[:3]}, 力矩: {wrench[3:]}")
 import numpy as np
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # 末端雅可比矩阵 (6x7)，世界坐标系
@@ -360,7 +360,7 @@ arm.servoj(arm.state.joints, kp=0, kd=0, tau_ff=tau.tolist())
 import numpy as np
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 dynamics = arm._get_dynamics()
@@ -405,7 +405,7 @@ arm.disable()
 ```python
 from onero_sdk import Arm
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # 标定动力学参数（提高重力补偿精度）
@@ -426,7 +426,7 @@ arm.disable()
 ```python
 from onero_sdk import Arm, KinematicCalibrator
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # 从不同构型触碰同一个固定参考点（如桌角）
@@ -459,7 +459,7 @@ arm.disable()
 ```python
 from onero_sdk import Arm, TrapezoidalProfile, RuckigPlanner, TimeOptimalPlanner
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # 1. 梯形 / S 曲线（内置，无额外依赖）
@@ -517,7 +517,7 @@ backend.movej(r_forward, l_forward, duration=2.0)
 ```python
 from onero_sdk import DualArm
 
-with DualArm.create("A1", left_channel="can0", right_channel="can1") as dual:
+with DualArm.create("A1R", left_channel="can0", right_channel="can1") as dual:
     dual.movej(
         left_joints=[0.0, 0.5, 0.0, -0.3, 0.0, 0.0, 0.0],
         right_joints=[0.0, -0.5, 0.0, 0.3, 0.0, 0.0, 0.0],
@@ -559,7 +559,7 @@ class MyGripper(Gripper):
 bus = CanBus("can0")
 gripper = MyGripper(bus, can_id=0x08)
 
-with Arm("A1", channel="can0", end_effector=gripper) as arm:
+with Arm("A1R", channel="can0", end_effector=gripper) as arm:
     arm.movej([0.0, 0.8, 0.0, -1.0, 0.0, 0.5, 0.0], duration=2.0)
     arm.gripper.open()
     arm.movej([0.0, 1.0, 0.0, -1.2, 0.0, 0.5, 0.0], duration=1.5)
@@ -602,14 +602,14 @@ sudo slcand -o -s8 /dev/ttyACM0 can0 && sudo ip link set up can0
 最小配置 (`configs/a1.yaml`):
 
 ```yaml
-model: "A1"
+model: "A1R"
 channel: "can0"
 ```
 
 或在代码中直接创建：
 
 ```python
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm = Arm.from_config("configs/a1.yaml")
 ```
 

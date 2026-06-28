@@ -38,7 +38,7 @@ class DualArm:
         self._right = right
 
     @classmethod
-    def create(cls, model: str = "A1",
+    def create(cls, model: str = "A1R",
                left_channel: Optional[str] = None,
                right_channel: Optional[str] = None,
                safety: Optional[SafetyConfig] = None,
@@ -66,10 +66,10 @@ class DualArm:
 
         Config format:
             left:
-              model: "A1"
+              model: "A1L"
               channel: "can0"
             right:
-              model: "A1"
+              model: "A1R"
               channel: "can1"
         """
         from .config import load_dual_arm_config
@@ -79,12 +79,12 @@ class DualArm:
         right_cfg = raw["right"]
 
         left = Arm(
-            model=left_cfg.get("model", "A1"),
+            model=left_cfg.get("model", "A1L"),
             channel=left_cfg.get("channel"),
             **kwargs,
         )
         right = Arm(
-            model=right_cfg.get("model", "A1"),
+            model=right_cfg.get("model", "A1R"),
             channel=right_cfg.get("channel"),
             **kwargs,
         )

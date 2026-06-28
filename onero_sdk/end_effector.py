@@ -7,7 +7,7 @@ Third-party or custom end effectors: inherit from EndEffector or Gripper.
 
 Example — built-in gripper::
 
-    arm = Arm("A1", channel="can0", end_effector=OneroGripper(can_id=0x08))
+    arm = Arm("A1R", channel="can0", end_effector=OneroGripper(can_id=0x08))
     arm.enable()          # also enables the gripper
     arm.gripper.close()   # close = grasp
 
@@ -27,7 +27,7 @@ Example — custom end effector::
         def shutdown(self):
             pass  # release resources
 
-    arm = Arm("A1", channel="can0", end_effector=MyHand(bus, 0x08))
+    arm = Arm("A1R", channel="can0", end_effector=MyHand(bus, 0x08))
 """
 
 from abc import ABC, abstractmethod

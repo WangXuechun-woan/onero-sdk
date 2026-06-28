@@ -55,7 +55,7 @@ def setup_scene(model):
     model.vis.headlight.specular[:] = [0.2, 0.2, 0.2]
 
 
-def make_viewer_backend(model_name="A1"):
+def make_viewer_backend(model_name="A1R"):
     """创建 MuJoCo 后端并启动被动渲染器（含环境改善）。
 
     通过 on_step 回调实现运动过程自动刷新渲染器，
@@ -633,8 +633,8 @@ def main():
     print("=" * 60)
     print("\n启动 MuJoCo 渲染器...")
 
-    backend, viewer = make_viewer_backend("A1")
-    arm = Arm("A1", backend=backend)
+    backend, viewer = make_viewer_backend("A1R")
+    arm = Arm("A1R", backend=backend)
     arm.enable()
     viewer.sync()
 

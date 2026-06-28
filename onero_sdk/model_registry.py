@@ -66,10 +66,27 @@ def _parse_joint_limits_from_urdf(urdf_path: Path) -> list[dict]:
     return limits
 
 
+def _parse_model_variant(name: str) -> tuple[str, str]:
+    """
+    Parse model name into (base_model, variant).
+
+    Examples:
+        "A1R" → ("A1", "r")
+        "A1L" → ("A1", "l")
+        "A1"  → ("A1", "r")  (deprecated, defaults to right)
+    """
+    upper = name.upper()
+    if upper.endswith("R") and upper[:-1] in _CAN_CONFIG:
+        return upper[:-1], "r"
+    if upper.endswith("L") and upper[:-1] in _CAN_CONFIG:
+        return upper[:-1], "l"
+    return name, "r"
+
+
 def _find_urdf(model_name: str, variant: str = "r") -> Path:
     """Locate URDF file for a given model and variant (r=right, l=left)."""
     base = Path(__file__).parent / "urdf" / model_name
-    urdf_file = base / f"a1_{variant}.urdf"
+    urdf_file = base / f"{model_name.lower()}_{variant}.urdf"
     if urdf_file.exists():
         return urdf_file
     # Fallback: try without variant
@@ -149,17 +166,44 @@ _REGISTRY_CACHE: dict[str, ArmModel] = {}
 
 
 def get_model(name: str) -> ArmModel:
-    """Look up an arm model by name. Raises OneroConfigError if not found."""
+    """
+    Look up an arm model by name. Raises OneroConfigError if not found.
+
+    Supports explicit variant naming:
+        "A1R" — right arm
+        "A1L" — left arm
+        "A1"  — deprecated, defaults to right arm with warning
+    """
     from .exceptions import OneroConfigError
 
     if name in _REGISTRY_CACHE:
         return _REGISTRY_CACHE[name]
 
-    if name not in _CAN_CONFIG:
-        available = ", ".join(_CAN_CONFIG.keys())
-        raise OneroConfigError(f"Unknown arm model '{name}'. Available: {available}")
+    base_model, variant = _parse_model_variant(name)
 
-    model = _build_model(name)
+    if base_model not in _CAN_CONFIG:
+        available = []
+        for k in _CAN_CONFIG:
+            available.extend([f"{k}L", f"{k}R"])
+        raise OneroConfigError(
+            f"Unknown arm model '{name}'. Available: {', '.join(available)}")
+
+    if name in _CAN_CONFIG and name == base_model:
+        logger.warning(
+            f"Arm('{name}') is deprecated — please use '{name}R' (right) "
+            f"or '{name}L' (left) explicitly.")
+
+    model = _build_model(base_model, variant)
+    model = ArmModel(
+        name=name,
+        num_joints=model.num_joints,
+        joints=model.joints,
+        default_kp=model.default_kp,
+        default_kd=model.default_kd,
+        control_freq=model.control_freq,
+        gear_ratios=model.gear_ratios,
+        rotor_inertias=model.rotor_inertias,
+    )
     _REGISTRY_CACHE[name] = model
     return model
 

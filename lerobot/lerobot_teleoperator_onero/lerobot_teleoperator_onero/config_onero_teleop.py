@@ -21,5 +21,5 @@ class OneroTeleopConfig(TeleoperatorConfig):
     """
 
     leader_channel: str = "can1"
-    model: str = "A1"
+    model: str = "A1R"
     damping: float = 0.3

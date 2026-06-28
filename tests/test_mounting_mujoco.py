@@ -22,8 +22,8 @@ from onero_sdk.mujoco_backend import MujocoBackend
 
 def test_mounting_does_not_break_upright():
     """mounting=None (UPRIGHT) should behave identically to pre-mounting code."""
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend, mounting=None)
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend, mounting=None)
     arm.enable()
 
     target = [0.0, -0.5, 0.3, 0.5, -0.2, 0.3, 0.0]
@@ -38,8 +38,8 @@ def test_mounting_does_not_break_upright():
 
 def test_mounting_string_init():
     """Arm initializes correctly with string mounting argument."""
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend, mounting="side_mount_left")
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend, mounting="side_mount_left")
     arm.enable()
 
     assert arm.mounting.preset == MountingPreset.SIDE_MOUNT_LEFT
@@ -61,8 +61,8 @@ def test_gravity_compensation_upright():
     (joint friction, damping, actuator modeling). This test verifies the
     gravity_torque computation runs correctly and produces reasonable values.
     """
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend, mounting="upright")
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend, mounting="upright")
     arm.enable()
 
     # Move to a non-trivial config where gravity torques matter
@@ -90,14 +90,14 @@ def test_gravity_compensation_side_mount():
     With SIDE_MOUNT_LEFT, gravity compensation should still keep
     the arm stationary — proving the gravity vector is set correctly.
     """
-    backend = MujocoBackend(model_name="A1")
+    backend = MujocoBackend(model_name="A1R")
 
     # Note: MuJoCo simulation itself uses world gravity [0,0,-9.81].
     # The SDK's gravity_torques computes based on the model's gravity setting.
     # In a real system, this test validates the gravity direction.
     # In MuJoCo, we verify the API plumbing doesn't crash and produces
     # non-zero gravity torques with the correct sign patterns.
-    arm = Arm("A1", backend=backend, mounting="side_mount_left")
+    arm = Arm("A1R", backend=backend, mounting="side_mount_left")
     arm.enable()
 
     # Verify gravity direction is set correctly in the dynamics model
@@ -112,7 +112,7 @@ def test_gravity_compensation_side_mount():
     torques_side = arm.gravity_torque()
 
     # Compare with what upright would give (different direction)
-    arm2 = Arm("A1", backend=MujocoBackend(model_name="A1"), mounting="upright")
+    arm2 = Arm("A1R", backend=MujocoBackend(model_name="A1R"), mounting="upright")
     arm2.enable()
     arm2.movej(target, duration=2.0)
     torques_upright = arm2.gravity_torque()
@@ -134,13 +134,13 @@ def test_gravity_symmetry_left_right():
     """
     target = [0.0, -0.4, 0.2, 0.3, 0.0, 0.2, 0.0]
 
-    arm_left = Arm("A1", backend=MujocoBackend(model_name="A1"),
+    arm_left = Arm("A1R", backend=MujocoBackend(model_name="A1R"),
                    mounting="side_mount_left")
     arm_left.enable()
     arm_left.movej(target, duration=1.5)
     g_left = arm_left.gravity_torque()
 
-    arm_right = Arm("A1", backend=MujocoBackend(model_name="A1"),
+    arm_right = Arm("A1R", backend=MujocoBackend(model_name="A1R"),
                     mounting="side_mount_right")
     arm_right.enable()
     arm_right.movej(target, duration=1.5)
@@ -167,8 +167,8 @@ def test_world_frame_get_pose():
     With world_frame=True, get_pose() should return coordinates rotated
     into world frame (X=forward, Y=left, Z=up).
     """
-    backend = MujocoBackend(model_name="A1")
-    arm_base = Arm("A1", backend=backend, mounting="side_mount_left",
+    backend = MujocoBackend(model_name="A1R")
+    arm_base = Arm("A1R", backend=backend, mounting="side_mount_left",
                    world_frame=False)
     arm_base.enable()
 
@@ -177,7 +177,7 @@ def test_world_frame_get_pose():
     pos_base, rot_base = arm_base.get_pose()
 
     # Same arm but world_frame=True
-    arm_world = Arm("A1", backend=MujocoBackend(model_name="A1"),
+    arm_world = Arm("A1R", backend=MujocoBackend(model_name="A1R"),
                     mounting="side_mount_left", world_frame=True)
     arm_world.enable()
     arm_world.movej(target, duration=1.5)
@@ -202,8 +202,8 @@ def test_world_frame_get_pose():
 
 def test_set_tcp_offset():
     """set_tcp affects get_pose output."""
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend, mounting="upright")
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend, mounting="upright")
     arm.enable()
 
     target = [0.0, -0.3, 0.2, 0.3, -0.1, 0.2, 0.0]
@@ -234,7 +234,7 @@ def test_set_tcp_offset():
 
 def test_ceiling_mount_gravity():
     """CEILING mount should have gravity pointing in +Z of base frame."""
-    arm = Arm("A1", backend=MujocoBackend(model_name="A1"), mounting="ceiling")
+    arm = Arm("A1R", backend=MujocoBackend(model_name="A1R"), mounting="ceiling")
     arm.enable()
 
     g = arm.gravity_direction
@@ -250,8 +250,8 @@ def test_freedrive_with_side_mount():
     Freedrive in side-mount configuration should not crash and should
     produce non-zero gravity compensation torques.
     """
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend, mounting="side_mount_left")
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend, mounting="side_mount_left")
     arm.enable()
 
     # Move to a config
@@ -272,8 +272,8 @@ def test_freedrive_with_side_mount():
 
 def test_set_world_frame_toggle():
     """set_world_frame() toggles coordinate transform behavior."""
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend, mounting="side_mount_left",
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend, mounting="side_mount_left",
               world_frame=False)
     arm.enable()
     arm.movej([0.0, -0.3, 0.2, 0.3, -0.1, 0.2, 0.0], duration=1.5)

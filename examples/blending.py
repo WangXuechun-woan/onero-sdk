@@ -7,7 +7,7 @@ through multiple waypoints without stopping at each one.
 
 from onero_sdk import Arm, TrajectoryPlanner, Waypoint
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 
 # Define waypoints
 waypoints = [

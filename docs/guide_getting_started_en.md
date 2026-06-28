@@ -18,7 +18,7 @@ from onero_sdk import Arm
 from onero_sdk.mujoco_backend import MujocoBackend
 
 # Simulation backend — identical API to real hardware
-arm = Arm("A1", backend=MujocoBackend(model_name="A1"))
+arm = Arm("A1R", backend=MujocoBackend(model_name="A1R"))
 arm.enable()
 
 # Joint-space motion: move each of 7 joints to target angles (radians)
@@ -36,7 +36,7 @@ arm.disable()
 
 For real hardware, replace `backend=...` with `channel="can0"`:
 ```python
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 ```
 
 ## Core Concepts
@@ -78,7 +78,7 @@ The A1 is typically side-mounted (Z-axis pointing left or right), not upright. S
 - Intuitive world-frame coordinates
 
 ```python
-arm = Arm("A1", channel="can0", mounting="side_mount_left")
+arm = Arm("A1R", channel="can0", mounting="side_mount_left")
 
 # Available presets:
 # "upright"          — Z points up (default)
@@ -92,7 +92,7 @@ arm = Arm("A1", channel="can0", mounting="side_mount_left")
 ### World Frame Mode
 
 ```python
-arm = Arm("A1", channel="can0",
+arm = Arm("A1R", channel="can0",
           mounting="side_mount_left",
           world_frame=True)
 
@@ -147,7 +147,7 @@ The SDK includes built-in safety:
 
 Recommended pattern:
 ```python
-with Arm("A1", channel="can0") as arm:
+with Arm("A1R", channel="can0") as arm:
     arm.movej([...])
     # arm.disable() called automatically, even on exceptions
 ```

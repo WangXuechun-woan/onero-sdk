@@ -21,10 +21,10 @@ except ImportError:
     )
 
 # 创建仿真后端（替代真实 CAN 硬件）
-backend = MujocoBackend(model_name="A1")
+backend = MujocoBackend(model_name="A1R")
 
 # 用仿真后端创建 Arm（接口与真机完全一致）
-arm = Arm("A1", backend=backend)
+arm = Arm("A1R", backend=backend)
 arm.enable()
 
 # 移动到目标关节角度

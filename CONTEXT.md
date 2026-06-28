@@ -27,7 +27,7 @@ A motion mode where the user sends targets at each control step. The SDK execute
 Default protections active in Real-time Control mode: joint position limits, velocity clamping, acceleration bounds. Prevent hardware damage (especially on smaller wrist motors). Can be explicitly disabled by advanced users.
 
 ### Model Registry
-An internal lookup table mapping arm model names (e.g. "A1") to their joint configurations (number of joints, position/velocity/torque limits per joint, CAN ID assignments). Users specify only the model name; SDK resolves all hardware parameters.
+An internal lookup table mapping arm model names (e.g. "A1R", "A1L") to their joint configurations (number of joints, position/velocity/torque limits per joint, CAN ID assignments). Users specify only the model name; SDK resolves all hardware parameters.
 
 ### movej / movep
 Planned motion commands (blocking). `movej` moves in joint space, `movep` moves in task space (Cartesian). Named after the industrial robotics convention (UR, ABB). SDK internally handles trajectory interpolation and smoothing.

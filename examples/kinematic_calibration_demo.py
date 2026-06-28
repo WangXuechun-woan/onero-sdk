@@ -134,7 +134,7 @@ def main():
     print("""
 from onero_sdk import Arm, KinematicCalibrator
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 # Step 1: Record touches

@@ -42,7 +42,7 @@ class MujocoBackend(ArmBackend):
         """
         Args:
             urdf_path: Path to URDF file. Auto-detected if None.
-            model_name: Model name for auto-detection (default "A1").
+            model_name: Model name for auto-detection (default "A1R").
             control_dt: Control loop period (seconds). Default 5ms (200Hz).
             physics_dt: Physics simulation timestep (seconds). Default 0.5ms.
             realtime: If True, sleep to match wall-clock time.
@@ -81,10 +81,13 @@ class MujocoBackend(ArmBackend):
 
     @staticmethod
     def _find_urdf(model_name: str) -> str:
+        from .model_registry import _parse_model_variant
+        base_model, variant = _parse_model_variant(model_name)
         pkg_dir = os.path.dirname(os.path.abspath(__file__))
         candidates = [
-            os.path.join(pkg_dir, "urdf", model_name, f"{model_name.lower()}_r.urdf"),
-            os.path.join(pkg_dir, "urdf", model_name, f"{model_name.lower()}_l.urdf"),
+            os.path.join(pkg_dir, "urdf", base_model, f"{base_model.lower()}_{variant}.urdf"),
+            os.path.join(pkg_dir, "urdf", base_model, f"{base_model.lower()}_r.urdf"),
+            os.path.join(pkg_dir, "urdf", base_model, f"{base_model.lower()}_l.urdf"),
         ]
         for path in candidates:
             if os.path.exists(path):

@@ -186,7 +186,7 @@ def detect_charuco(image, board, camera_matrix, dist_coeffs):
 # 主程序
 # ============================================================
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 arm.enable()
 
 try:

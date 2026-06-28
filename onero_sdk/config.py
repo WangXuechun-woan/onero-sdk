@@ -13,11 +13,11 @@ def load_arm_config(path: str) -> dict:
     Load arm configuration from a YAML file.
 
     Minimal config:
-        model: "A1"
+        model: "A1R"
         channel: "can0"
 
     Full config:
-        model: "A1"
+        model: "A1R"
         channel: "can0"
         kp: 50.0
         kd: 1.0
@@ -48,10 +48,10 @@ def load_dual_arm_config(path: str) -> dict:
 
     Format:
         left:
-          model: "A1"
+          model: "A1L"
           channel: "can0"
         right:
-          model: "A1"
+          model: "A1R"
           channel: "can1"
 
     Returns:

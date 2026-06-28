@@ -360,7 +360,7 @@ def main():
 
     # Create MuJoCo backend
     print("Initializing MuJoCo simulation...")
-    backend = MujocoBackend(model_name="A1", control_dt=dt, realtime=False)
+    backend = MujocoBackend(model_name="A1R", control_dt=dt, realtime=False)
     backend.enable()
     print("Ready.\n")
 

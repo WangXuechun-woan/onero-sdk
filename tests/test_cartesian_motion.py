@@ -37,8 +37,8 @@ pytestmark = pytest.mark.skipif(not HAS_MUJOCO, reason="MuJoCo not installed")
 
 @pytest.fixture
 def arm():
-    backend = MujocoBackend(model_name="A1")
-    arm = Arm("A1", backend=backend)
+    backend = MujocoBackend(model_name="A1R")
+    arm = Arm("A1R", backend=backend)
     arm.enable()
     # Move to a non-singular starting configuration
     arm.movej([0.0, -0.5, 0.3, -1.0, 0.0, 0.5, 0.0], duration=2.0)

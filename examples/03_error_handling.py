@@ -11,8 +11,8 @@
 from onero_sdk import Arm, OneroError
 from onero_sdk.mujoco_backend import MujocoBackend
 
-backend = MujocoBackend(model_name="A1")
-arm = Arm("A1", backend=backend)
+backend = MujocoBackend(model_name="A1R")
+arm = Arm("A1R", backend=backend)
 
 # === 1. 未使能就调用 ===
 print("1. 未使能就移动:")
@@ -53,7 +53,7 @@ print("\n6. 推荐的错误处理模式:")
 print("""
 from onero_sdk import Arm, OneroError
 
-arm = Arm("A1", channel="can0")
+arm = Arm("A1R", channel="can0")
 
 try:
     arm.enable()
@@ -71,7 +71,7 @@ print("7. 最简洁的写法 (with 语句自动 enable/disable):")
 print("""
 from onero_sdk import Arm
 
-with Arm("A1", channel="can0") as arm:
+with Arm("A1R", channel="can0") as arm:
     arm.movej([...], duration=2.0)
     # 退出 with 时自动 disable，即使出错也不例外
 """)
