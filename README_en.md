@@ -292,6 +292,18 @@ arm.enable()
 arm.set_payload(mass=0.5, cog=[0.0, 0.0, 0.05])
 ```
 
+### Auto Payload Estimation
+
+Automatically re-estimates payload mass at the start of each planned motion when the arm is quasi-static. Avoids mid-trajectory discontinuities while adapting to grasped objects between motions.
+
+```python
+arm.enable_auto_payload()
+
+# Payload is re-checked at each motion boundary
+arm.movej(pick_pose)     # checks payload here
+arm.movej(place_pose)    # checks again here
+```
+
 ### External Wrench Estimation
 
 **What it does**: Estimates 6-DOF external force/torque at the end-effector without a dedicated force sensor. Computed from the difference between measured motor currents and dynamics model predictions.

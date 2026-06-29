@@ -35,6 +35,7 @@ from .motion_executor import MotionExecutor, MotionFrame, VelocityFrame
 from .safe_backend import SafeBackend
 from .gain_policy import GainPolicy, Stiffness
 from .mounting import MountingPreset, MountingConfig
+from .protocols import ArmProtocol
 
 # Optional: IK (requires pip install onero-sdk[ik])
 try:
@@ -119,6 +120,7 @@ __all__ = [
     "geometry", "ControlClock", "MotionExecutor", "MotionFrame", "VelocityFrame",
     "SafeBackend", "GainPolicy", "Stiffness",
     "MountingPreset", "MountingConfig",
+    "ArmProtocol",
     "URDFChain",
     # Optional
     "IKSolver", "PinkIKSolver", "DynamicsModel",

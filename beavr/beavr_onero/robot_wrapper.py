@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from onero_sdk import Arm
+from onero_sdk.protocols import ArmProtocol
 from onero_sdk.fk import URDFChain
 from onero_sdk.model_registry import _find_urdf
 
@@ -99,7 +100,7 @@ class OneroA1Robot:
 
     def __init__(self, config: Optional[OneroA1Config] = None):
         self.config = config or OneroA1Config()
-        self._arm: Optional[Arm] = None
+        self._arm: Optional[ArmProtocol] = None
         self._fk: Optional[URDFChain] = None
         self._connected = False
 

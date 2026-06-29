@@ -12,6 +12,7 @@ from lerobot.cameras import make_cameras_from_configs
 from lerobot.robots import Robot
 
 from onero_sdk import Arm
+from onero_sdk.protocols import ArmProtocol
 from onero_sdk.model_registry import get_model
 
 from .config_onero import OneroRobotConfig
@@ -39,7 +40,7 @@ class OneroRobot(Robot):
     def __init__(self, config: OneroRobotConfig):
         super().__init__(config)
         self.config = config
-        self._arm: Arm | None = None
+        self._arm: ArmProtocol | None = None
         self._joint_specs = None
         self._joint_names: list[str] = []
         self.cameras = make_cameras_from_configs(config.cameras)

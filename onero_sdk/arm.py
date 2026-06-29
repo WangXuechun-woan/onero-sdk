@@ -1496,16 +1496,17 @@ class Arm(ArmTransformsMixin):
                             quiet_duration: float = 0.3,
                             min_change: float = 0.05) -> None:
         """
-        Enable automatic payload estimation during operation.
+        Enable automatic payload estimation at motion boundaries.
 
-        Monitors joint velocities in the background. When the arm is quasi-static
-        (all joint velocities below threshold for quiet_duration), automatically
-        re-estimates payload mass. Updates dynamics only if the estimated mass
-        differs from current by more than min_change kg.
+        At the start of each planned motion (movej/movel/movec/speedj/speedl),
+        checks whether the arm is quasi-static. If all joint velocities are below
+        threshold for quiet_duration, re-estimates payload mass from torque residuals.
+        Updates dynamics only if estimated mass differs from current by more than
+        min_change kg.
 
-        This provides "no-stop" payload adaptation: after grasping an object,
-        the arm naturally pauses briefly → estimation triggers → compensation
-        updates → subsequent motions are more precise.
+        Estimation triggers at motion boundaries, not continuously mid-trajectory.
+        This avoids compensation discontinuities during execution while still
+        adapting to grasped objects between motions.
 
         Args:
             velocity_threshold: Max joint velocity (rad/s) to count as "static".
