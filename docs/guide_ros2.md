@@ -277,7 +277,7 @@ class VisualGrasping(Node):
     def on_target_detected(self, msg):
         # 通过 SDK 做 IK 解算后，用 action 发送关节轨迹
         # (需要在节点中嵌入 SDK 的 IK 求解器)
-        pass
+        raise NotImplementedError("需要接入真实 IK 求解器和轨迹 action 后再运行")
 ```
 
 ### 录制与回放 (rosbag)

@@ -215,8 +215,11 @@ class OneroA1Operator:
         # 夹爪控制
         grip = buttons.get(self.config.grip_button, False)
         if grip != self._gripper_closed:
-            self._gripper_closed = grip
-            # TODO: 调用夹爪 open/close
+            raise NotImplementedError(
+                "BEAVR gripper button was pressed, but OneroA1Robot has no "
+                "configured gripper interface. Wire a real end-effector before "
+                "enabling grip_button control."
+            )
 
     def _receive_vr(self) -> Optional[dict]:
         """从 ZMQ 接收 VR 手部数据。"""

@@ -135,6 +135,186 @@ with Arm("A1R", channel="can0") as arm:
     arm.speedl([0.0, 0.0, -0.05, 0.0, 0.0, 0.0], acceleration=0.5, duration=2.0)
 ```
 
+### 坐标系（frame）
+
+**特性说明**：所有笛卡尔 API（`movel`/`movep`/`servop`/`speedl`/`force_mode` 等）支持 `frame=` 参数，指定目标坐标系。内置 `"base"`（基坐标系）、`"world"`（世界坐标系）、`"tool"`（工具坐标系，相对增量运动），还可注册自定义坐标系。
+
+**适用场景**：多臂协作统一世界坐标系；视觉引导用相机坐标系下发指令；工具相对运动（沿工具 Z 轴前进）；工件坐标系简化编程。
+
+---
+
+#### 1. base 坐标系（默认）
+
+**定义**：机械臂 base_link 原点，Z 轴沿第一个关节轴方向。
+
+**前置条件**：无，永远可用。
+
+**何时使用**：单臂、不需要与外部设备对齐时。
+
+```python
+arm = Arm("A1R", channel="can0")
+arm.enable()
+
+# frame="base" 或默认（world_frame=False 时）
+arm.movel([0.3, 0.0, 0.4, 0, 0, 0], frame="base")
+pos, rot = arm.get_pose(frame="base")
+```
+
+---
+
+#### 2. world 坐标系
+
+**定义**：统一参考系，约定 X=前方，Y=左，Z=上。通过 mounting（旋转）+ base_position（平移）确定 world 与 base 之间的变换关系。
+
+**前置条件**：
+- `mounting=`：安装方式预设（提供 R_world_base 旋转），SDK 内置预设：`"upright"`, `"side_mount_left"`, `"side_mount_right"`, `"ceiling"`
+- `base_position=`：base 原点在 world 中的位置 [x, y, z]（米）。单臂可省略（默认 [0,0,0]），双臂**必须传入**
+
+**参数来源**：
+- `mounting`：根据实际安装方式选择预设，或用 `MountingConfig(rotation=R)` 自定义旋转矩阵
+- `base_position`：从 CAD 图纸量取，或用卷尺测量 base 法兰盘中心相对于世界原点的 XYZ 偏移
+
+```python
+# ─── 单臂侧装（base_position 默认 [0,0,0]，world 原点在 base 正下方）───
+arm = Arm("A1R", channel="can0", mounting="side_mount_right", world_frame=True)
+arm.enable()
+arm.movel([0.3, 0.0, 0.4, 0, 0, 0])  # 在世界坐标系中的绝对位置
+
+# ─── 双臂（必须指定各自 base 在 world 中的位置）───
+# world 原点选在两臂中间的桌面上
+arm_left = Arm("A1L", channel="can0", mounting="side_mount_left",
+               world_frame=True, base_position=[0, 0.15, 0.8])
+arm_right = Arm("A1R", channel="can1", mounting="side_mount_right",
+                world_frame=True, base_position=[0, -0.15, 0.8])
+
+# 两条臂使用同一个世界坐标系下发指令
+arm_left.movel([0.3, 0.0, 0.5, 0, 0, 0], frame="world")
+arm_right.movel([0.3, 0.0, 0.5, 0, 0, 0], frame="world")
+
+# 也可运行时更新 base 位置（如移动底座标定后）
+arm.set_base_position([0.1, -0.2, 0.75])
+```
+
+---
+
+#### 3. tool 坐标系
+
+**定义**：以当前 TCP（Tool Center Point）为原点，沿当前工具姿态的局部坐标系。`frame="tool"` 下的坐标值表示**相对增量运动**（UR 风格）——不是绝对目标位置，而是"从当前位置沿工具轴方向移动多少"。
+
+**前置条件**：必须先调用 `set_tcp(position, rotation)` 定义工具偏移，否则报错 `OneroConfigError`。
+
+**参数来源**：
+- `position`：工具尖端相对 flange 中心的 [x, y, z] 偏移（米），在 flange 坐标系下表达。从工具 CAD 图纸或用卡尺直接量取。
+- `rotation`：工具坐标系相对 flange 的旋转（可选）。如果工具尖端朝向不与 flange Z 对齐才需要。
+
+```python
+arm = Arm("A1R", channel="can0")
+arm.enable()
+
+# ── 步骤 1：定义工具 ──
+# 例：笔形工具，沿 flange Z 轴延伸 15cm，无旋转
+arm.set_tcp([0, 0, 0.15])
+
+# 例：侧装夹爪，X 方向偏移 5cm，旋转 90°
+import numpy as np
+R_tool = np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]], dtype=float)
+arm.set_tcp([0.05, 0, 0], rotation=R_tool)
+
+# ── 步骤 2：使用 tool frame ──
+# 沿工具 Z 轴前进 5cm（不管臂当前姿态如何）
+arm.movel([0, 0, 0.05, 0, 0, 0], frame="tool")
+
+# 沿工具 X 轴横移 2cm
+arm.movel([0.02, 0, 0, 0, 0, 0], frame="tool")
+
+# 速度控制：沿工具 Z 以 5cm/s 进给
+arm.speedl([0, 0, 0.05, 0, 0, 0], duration=2.0, frame="tool")
+
+# 清除工具定义（回到 flange frame，同时禁用 tool frame）
+arm.clear_tcp()
+```
+
+---
+
+#### 4. 自定义坐标系（camera / workpiece / fixture）
+
+**定义**：用户通过 `register_frame()` 注册的命名坐标系，指定该坐标系相对世界坐标系的旋转和位置。
+
+**前置条件**：必须先 `register_frame(name, rotation, position)`，否则报错。
+
+**参数来源**：
+
+| 典型用例 | rotation 来源 | position 来源 |
+|----------|--------------|---------------|
+| 相机坐标系 | 手眼标定（eye-in-hand 或 eye-to-hand） | 手眼标定 |
+| 工件坐标系 | 3 点标定法 / CAD 已知 | 示教或视觉定位 |
+| 固定工装 | CAD / 测量 | CAD / 测量 |
+
+```python
+import numpy as np
+from onero_sdk import Arm
+
+arm = Arm("A1R", channel="can0", mounting="side_mount_right", world_frame=True)
+arm.enable()
+
+# ════════════════════════════════════════════════════
+# 示例 A：注册相机坐标系（eye-to-hand，相机固定在工作台上）
+# ════════════════════════════════════════════════════
+# 参数由手眼标定程序输出（如 OpenCV calibrateHandEye）
+R_cam_to_world = np.array([
+    [0, -1,  0],
+    [1,  0,  0],
+    [0,  0,  1],
+], dtype=float)  # 相机 X 轴对应世界 -Y
+p_cam_in_world = [0.5, 0.3, 1.2]  # 相机在世界系中的位置
+
+arm.register_frame("camera", rotation=R_cam_to_world, position=p_cam_in_world)
+
+# 视觉检测到目标在相机坐标系中的位置 → 直接下发
+target_in_cam = [0.1, -0.05, 0.8, 0, 0, 0]  # 相机系下的 [x,y,z,rx,ry,rz]
+arm.movel(target_in_cam, frame="camera")
+
+# ════════════════════════════════════════════════════
+# 示例 B：注册工件坐标系（3 点标定）
+# ════════════════════════════════════════════════════
+# 示教 3 个点：原点 O、X 方向点 Px、XY 平面内点 Py
+O  = np.array([0.4, 0.1, 0.05])   # 工件原点在世界系位置
+Px = np.array([0.5, 0.1, 0.05])   # X 方向
+Py = np.array([0.4, 0.2, 0.05])   # Y 方向（大致）
+
+x_axis = (Px - O) / np.linalg.norm(Px - O)
+y_raw = Py - O
+z_axis = np.cross(x_axis, y_raw)
+z_axis /= np.linalg.norm(z_axis)
+y_axis = np.cross(z_axis, x_axis)
+R_workpiece = np.column_stack([x_axis, y_axis, z_axis])
+
+arm.register_frame("workpiece", rotation=R_workpiece, position=O)
+
+# 在工件坐标系中编程（相对工件原点）
+arm.movel([0.05, 0.02, 0.01, 0, 0, 0], frame="workpiece")
+
+# 移除不再使用的坐标系
+arm.unregister_frame("workpiece")
+```
+
+---
+
+#### 坐标系 API 一览
+
+| 方法 | 说明 |
+|------|------|
+| `Arm(..., world_frame=True, base_position=[x,y,z])` | 构造时配置 world 坐标系 |
+| `arm.set_base_position([x, y, z])` | 运行时更新 base 在 world 中的位置 |
+| `arm.set_world_frame(True/False)` | 切换默认坐标系为 world/base |
+| `arm.set_tcp(position, rotation)` | 定义工具，启用 `frame="tool"` |
+| `arm.clear_tcp()` | 清除工具定义，禁用 tool frame |
+| `arm.register_frame(name, rotation, position)` | 注册自定义坐标系 |
+| `arm.unregister_frame(name)` | 移除自定义坐标系 |
+| `arm.default_frame` | 查看当前默认坐标系名 |
+| `arm.get_pose(frame="...")` | 获取指定坐标系下的位姿 |
+| `arm.movel(..., frame="...")` | 在指定坐标系下运动 |
+
 ### 示教模式（freedrive）+ 录制回放
 
 **特性说明**：示教模式通过重力补偿让机械臂"失重"，用户可以徒手拖动机械臂到任意位姿。配合录制/回放功能，实现"教一遍、做一遍"的编程方式。支持约束示教（仅允许指定方向运动）和变速回放。
@@ -211,14 +391,14 @@ arm.enable()
 
 try:
     # 在z方向施加10N向下力，x/y保持位置
-    # task_frame: 力方向的参考坐标系 [x, y, z, rx, ry, rz]
+    # selection: 1=力控方向, 0=位置保持方向（必须为 0 或 1）
     # limits: 力控方向的速度上限 (m/s, rad/s)
     for _ in range(1000):
         arm.force_mode(
             selection=[0, 0, 1, 0, 0, 0],       # z = 力控
             wrench=[0, 0, -10.0, 0, 0, 0],       # 10N向下
-            task_frame=[0, 0, 0, 0, 0, 0],       # 基坐标系
             limits=[0, 0, 0.1, 0, 0, 0],         # z方向最大0.1 m/s
+            frame="base",                         # 力方向参考坐标系
         )
         time.sleep(1/100)
 
@@ -531,11 +711,12 @@ backend.movej(r_forward, l_forward, duration=2.0)
 ```python
 from onero_sdk import DualArm
 
-with DualArm.create("A1R", left_channel="can0", right_channel="can1") as dual:
-    dual.movej(
-        left_joints=[0.0, 0.5, 0.0, -0.3, 0.0, 0.0, 0.0],
-        right_joints=[0.0, -0.5, 0.0, 0.3, 0.0, 0.0, 0.0],
+with DualArm.create(left_channel="can0", right_channel="can1", arm_spacing=0.30) as dual:
+    dual.movel(
+        left_position=[0.3, 0.15, 0.4, 0, 0, 0],
+        right_position=[0.3, -0.15, 0.4, 0, 0, 0],
         duration=3.0,
+        frame="world",
     )
 ```
 
@@ -556,8 +737,8 @@ class MyGripper(Gripper):
         self._pos = 0xFF
 
     def enable(self):    self.open()
-    def disable(self):   pass
-    def shutdown(self):  pass
+    def disable(self):   self.open()   # 失能时释放夹爪
+    def shutdown(self):  return None   # CAN bus 由调用方持有
     def open(self):      self._send(0xFF)
     def grasp(self):     self._send(0x00)
     def set_position(self, position: float):
@@ -618,6 +799,20 @@ sudo slcand -o -s8 /dev/ttyACM0 can0 && sudo ip link set up can0
 ```yaml
 model: "A1R"
 channel: "can0"
+```
+
+完整配置（含坐标系）:
+
+```yaml
+model: "A1R"
+channel: "can0"
+mounting: "side_mount_right"
+world_frame: true
+base_position: [0, -0.15, 0]
+safety:
+  max_velocity: 5.0
+  max_delta_per_step: 0.03
+  timeout_frames: 10
 ```
 
 或在代码中直接创建：

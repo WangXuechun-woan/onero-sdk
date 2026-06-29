@@ -70,10 +70,12 @@ class OneroTeleop(Teleoperator):
         return True
 
     def calibrate(self) -> None:
-        pass
+        """No separate LeRobot calibration artifact is required for this teleop device."""
+        return None
 
     def configure(self) -> None:
-        pass
+        """Runtime configuration is supplied through OneroTeleopConfig."""
+        return None
 
     def get_action(self) -> dict[str, Any]:
         """Read leader arm joint positions as normalized action."""
@@ -85,7 +87,7 @@ class OneroTeleop(Teleoperator):
 
     def send_feedback(self, feedback: dict[str, Any]) -> None:
         """No force feedback on leader arm (passive freedrive)."""
-        pass
+        return None
 
     def _normalize(self, value: float, joint_idx: int) -> float:
         spec = self._joint_specs[joint_idx]

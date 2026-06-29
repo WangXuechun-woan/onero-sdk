@@ -102,10 +102,12 @@ class OneroRobot(Robot):
         return True
 
     def calibrate(self) -> None:
-        pass
+        """No separate LeRobot calibration artifact is required for Onero A1."""
+        return None
 
     def configure(self) -> None:
-        pass
+        """Runtime configuration is supplied through OneroRobotConfig."""
+        return None
 
     # ─── I/O ──────────────────────────────────────────────────────────
 

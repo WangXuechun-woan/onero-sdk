@@ -679,13 +679,9 @@ class TestRotvecRobustness:
 
     @pytest.mark.parametrize("val", [float('nan'), float('inf'), float('-inf')])
     def test_invalid_rotvec_values(self, val):
-        """NaN/Inf in rotation vector."""
-        try:
-            R = rotvec_to_matrix([val, 0, 0])
-            if np.any(np.isnan(R)):
-                pytest.fail(f"rotvec_to_matrix([{val},0,0]) produced NaN")
-        except (ValueError, FloatingPointError):
-            pass
+        """NaN/Inf in rotation vector raises error."""
+        with pytest.raises(Exception):
+            rotvec_to_matrix([val, 0, 0])
 
     @pytest.mark.parametrize("scale", [1e-20, 1e-10, 1e10, 1e20])
     def test_extreme_magnitude_axis(self, scale):
@@ -752,6 +748,113 @@ class TestSafetyConfigEdgeCases:
                 assert np.isfinite(result[j])
         except (ValueError, TypeError):
             pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Force-mode input validation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestForceModeInputValidation:
+    """force_mode must reject NaN/Inf and malformed inputs before they reach backend."""
+
+    @pytest.fixture
+    def arm(self):
+        try:
+            from onero_sdk import Arm
+            from onero_sdk.mujoco_backend import MujocoBackend
+        except ImportError:
+            pytest.skip("MuJoCo not installed")
+        backend = MujocoBackend(model_name="A1R")
+        a = Arm("A1R", backend=backend)
+        a.enable()
+        a.movej([0.0, -0.3, 0.2, -0.5, 0.0, 0.3, 0.0], duration=1.0)
+        yield a
+        a.disable()
+        backend.close()
+
+    def test_selection_nan_rejected(self, arm):
+        with pytest.raises(Exception, match="NaN or Inf"):
+            arm.force_mode(selection=[0, 0, float('nan'), 0, 0, 0],
+                           wrench=[0, 0, -5, 0, 0, 0])
+
+    def test_selection_wrong_length_rejected(self, arm):
+        with pytest.raises(Exception, match="6-element"):
+            arm.force_mode(selection=[0, 0, 1], wrench=[0, 0, -5, 0, 0, 0])
+
+    def test_selection_non_binary_rejected(self, arm):
+        with pytest.raises(Exception, match="0 or 1"):
+            arm.force_mode(selection=[0, 0, 0.5, 0, 0, 0],
+                           wrench=[0, 0, -5, 0, 0, 0])
+
+    def test_wrench_nan_rejected(self, arm):
+        with pytest.raises(Exception, match="NaN or Inf"):
+            arm.force_mode(selection=[0, 0, 1, 0, 0, 0],
+                           wrench=[0, 0, float('inf'), 0, 0, 0])
+
+    def test_wrench_wrong_length_rejected(self, arm):
+        with pytest.raises(Exception, match="6-element"):
+            arm.force_mode(selection=[0, 0, 1, 0, 0, 0],
+                           wrench=[0, 0, -5])
+
+    def test_limits_nan_rejected(self, arm):
+        with pytest.raises(Exception, match="NaN or Inf"):
+            arm.force_mode(selection=[0, 0, 1, 0, 0, 0],
+                           wrench=[0, 0, -5, 0, 0, 0],
+                           limits=[0.1, 0.1, float('nan'), 0.1, 0.1, 0.1])
+
+    def test_limits_negative_rejected(self, arm):
+        with pytest.raises(Exception, match="non-negative"):
+            arm.force_mode(selection=[0, 0, 1, 0, 0, 0],
+                           wrench=[0, 0, -5, 0, 0, 0],
+                           limits=[0.1, 0.1, -0.5, 0.1, 0.1, 0.1])
+
+    def test_valid_inputs_accepted(self, arm):
+        state = arm.force_mode(selection=[0, 0, 1, 0, 0, 0],
+                               wrench=[0, 0, -5, 0, 0, 0],
+                               limits=[0.5, 0.5, 0.5, 1.0, 1.0, 1.0])
+        assert state is not None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DualArm.create() input validation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestDualArmCreateValidation:
+    """DualArm.create() must reject dangerous configuration (world_frame without spacing)."""
+
+    def test_no_spacing_no_position_raises(self):
+        from onero_sdk import DualArm
+        from onero_sdk.exceptions import OneroConfigError
+        with pytest.raises(OneroConfigError, match="arm positioning is required"):
+            DualArm.create()
+
+    def test_arm_spacing_accepted(self):
+        try:
+            from onero_sdk import DualArm
+            from onero_sdk.mujoco_backend import MujocoBackend
+        except ImportError:
+            pytest.skip("MuJoCo not installed")
+        left_be = MujocoBackend(model_name="A1L")
+        right_be = MujocoBackend(model_name="A1R")
+        dual = DualArm.create(arm_spacing=0.30,
+                              left_backend=left_be, right_backend=right_be)
+        assert dual.left is not None
+        assert dual.right is not None
+
+    def test_explicit_positions_accepted(self):
+        try:
+            from onero_sdk import DualArm
+            from onero_sdk.mujoco_backend import MujocoBackend
+        except ImportError:
+            pytest.skip("MuJoCo not installed")
+        left_be = MujocoBackend(model_name="A1L")
+        right_be = MujocoBackend(model_name="A1R")
+        dual = DualArm.create(
+            base_position_left=[0, 0.2, 0],
+            base_position_right=[0, -0.2, 0],
+            left_backend=left_be, right_backend=right_be,
+        )
+        assert dual.left is not None
 
 
 if __name__ == "__main__":

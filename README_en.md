@@ -135,6 +135,184 @@ with Arm("A1R", channel="can0") as arm:
     arm.speedl([0.0, 0.0, -0.05, 0.0, 0.0, 0.0], acceleration=0.5, duration=2.0)
 ```
 
+### Coordinate Frames (frame)
+
+**What it does**: All Cartesian APIs (`movel`/`movep`/`servop`/`speedl`/`force_mode` etc.) accept a `frame=` parameter specifying the target coordinate frame. Built-in frames: `"base"` (arm base link), `"world"` (unified world frame), `"tool"` (relative motion in tool axes, UR-style). You can also register custom frames.
+
+**When to use**: Multi-arm coordination with a shared world frame; vision-guided manipulation using camera frame; tool-relative motion (advance along tool Z); workpiece frame simplifying programming.
+
+---
+
+#### 1. Base Frame (default)
+
+**Definition**: The arm's base_link origin, Z-axis along the first joint axis.
+
+**Prerequisites**: None — always available.
+
+**When to use**: Single arm, no need to align with external devices.
+
+```python
+arm = Arm("A1R", channel="can0")
+arm.enable()
+
+arm.movel([0.3, 0.0, 0.4, 0, 0, 0], frame="base")
+pos, rot = arm.get_pose(frame="base")
+```
+
+---
+
+#### 2. World Frame
+
+**Definition**: Unified reference frame. Convention: X=forward, Y=left, Z=up. Determined by mounting (rotation) + base_position (translation) relative to world origin.
+
+**Prerequisites**:
+- `mounting=`: installation preset (provides R_world_base rotation). Built-in: `"upright"`, `"side_mount_left"`, `"side_mount_right"`, `"ceiling"`
+- `base_position=`: base origin in world coordinates [x, y, z] (meters). Single-arm can omit (defaults to [0,0,0]); dual-arm **must provide**.
+
+**How to obtain parameters**:
+- `mounting`: choose based on physical installation, or use `MountingConfig(rotation=R)` for custom rotation matrix
+- `base_position`: measure from CAD drawings, or use a tape measure from the chosen world origin to the base flange center
+
+```python
+# ─── Single arm, side-mounted (base_position defaults to [0,0,0]) ───
+arm = Arm("A1R", channel="can0", mounting="side_mount_right", world_frame=True)
+arm.enable()
+arm.movel([0.3, 0.0, 0.4, 0, 0, 0])  # absolute position in world frame
+
+# ─── Dual arm (must specify each base position in world) ───
+# World origin chosen at the midpoint between the two arms, on the table surface
+arm_left = Arm("A1L", channel="can0", mounting="side_mount_left",
+               world_frame=True, base_position=[0, 0.15, 0.8])
+arm_right = Arm("A1R", channel="can1", mounting="side_mount_right",
+                world_frame=True, base_position=[0, -0.15, 0.8])
+
+# Both arms use the same world frame
+arm_left.movel([0.3, 0.0, 0.5, 0, 0, 0], frame="world")
+arm_right.movel([0.3, 0.0, 0.5, 0, 0, 0], frame="world")
+
+# Update base position at runtime (e.g., after mobile base calibration)
+arm.set_base_position([0.1, -0.2, 0.75])
+```
+
+---
+
+#### 3. Tool Frame
+
+**Definition**: Local frame at the current TCP (Tool Center Point). In `frame="tool"`, coordinates represent **relative incremental motion** (UR-style) — not an absolute target, but "how far to move along each tool axis from the current pose."
+
+**Prerequisites**: Must call `set_tcp(position, rotation)` first; raises `OneroConfigError` otherwise.
+
+**How to obtain parameters**:
+- `position`: [x, y, z] offset from flange center to tool tip (meters), measured in flange frame. Get from tool CAD drawing or measure with calipers.
+- `rotation`: rotation from flange frame to tool frame (optional). Only needed if tool tip direction doesn't align with flange Z.
+
+```python
+arm = Arm("A1R", channel="can0")
+arm.enable()
+
+# ── Step 1: Define the tool ──
+# Example: pen-shaped tool, 15cm along flange Z, no rotation
+arm.set_tcp([0, 0, 0.15])
+
+# Example: side-mounted gripper, 5cm X offset, rotated 90°
+R_tool = np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]], dtype=float)
+arm.set_tcp([0.05, 0, 0], rotation=R_tool)
+
+# ── Step 2: Use tool frame ──
+# Advance 5cm along tool Z (regardless of arm pose)
+arm.movel([0, 0, 0.05, 0, 0, 0], frame="tool")
+
+# Lateral 2cm along tool X
+arm.movel([0.02, 0, 0, 0, 0, 0], frame="tool")
+
+# Velocity control: 5cm/s feed along tool Z
+arm.speedl([0, 0, 0.05, 0, 0, 0], duration=2.0, frame="tool")
+
+# Clear tool definition (reverts to flange, disables tool frame)
+arm.clear_tcp()
+```
+
+---
+
+#### 4. Custom Frames (camera / workpiece / fixture)
+
+**Definition**: User-registered named frame via `register_frame()`, specifying rotation and position relative to the world frame.
+
+**Prerequisites**: Must call `register_frame(name, rotation, position)` first; raises error otherwise.
+
+**How to obtain parameters**:
+
+| Use case | rotation source | position source |
+|----------|----------------|-----------------|
+| Camera frame | Hand-eye calibration (OpenCV `calibrateHandEye`) | Hand-eye calibration |
+| Workpiece frame | 3-point teach / known from CAD | Teach or visual detection |
+| Fixture frame | CAD / measurement | CAD / measurement |
+
+```python
+import numpy as np
+from onero_sdk import Arm
+
+arm = Arm("A1R", channel="can0", mounting="side_mount_right", world_frame=True)
+arm.enable()
+
+# ══════════════════════════════════════════════════
+# Example A: Camera frame (eye-to-hand, fixed camera above workspace)
+# ══════════════════════════════════════════════════
+# Parameters from hand-eye calibration (e.g., OpenCV calibrateHandEye output)
+R_cam_to_world = np.array([
+    [0, -1,  0],
+    [1,  0,  0],
+    [0,  0,  1],
+], dtype=float)  # camera X → world -Y
+p_cam_in_world = [0.5, 0.3, 1.2]  # camera origin in world
+
+arm.register_frame("camera", rotation=R_cam_to_world, position=p_cam_in_world)
+
+# Vision detects target in camera coordinates → command directly
+target_in_cam = [0.1, -0.05, 0.8, 0, 0, 0]
+arm.movel(target_in_cam, frame="camera")
+
+# ══════════════════════════════════════════════════
+# Example B: Workpiece frame (3-point calibration)
+# ══════════════════════════════════════════════════
+# Teach 3 points: origin O, X-direction point Px, point in XY-plane Py
+O  = np.array([0.4, 0.1, 0.05])
+Px = np.array([0.5, 0.1, 0.05])
+Py = np.array([0.4, 0.2, 0.05])
+
+x_axis = (Px - O) / np.linalg.norm(Px - O)
+y_raw = Py - O
+z_axis = np.cross(x_axis, y_raw)
+z_axis /= np.linalg.norm(z_axis)
+y_axis = np.cross(z_axis, x_axis)
+R_workpiece = np.column_stack([x_axis, y_axis, z_axis])
+
+arm.register_frame("workpiece", rotation=R_workpiece, position=O)
+
+# Program in workpiece coordinates (relative to workpiece origin)
+arm.movel([0.05, 0.02, 0.01, 0, 0, 0], frame="workpiece")
+
+# Remove when no longer needed
+arm.unregister_frame("workpiece")
+```
+
+---
+
+#### Frame API Reference
+
+| Method | Description |
+|--------|-------------|
+| `Arm(..., world_frame=True, base_position=[x,y,z])` | Configure world frame at construction |
+| `arm.set_base_position([x, y, z])` | Update base position in world at runtime |
+| `arm.set_world_frame(True/False)` | Switch default frame to world/base |
+| `arm.set_tcp(position, rotation)` | Define tool, enables `frame="tool"` |
+| `arm.clear_tcp()` | Clear tool definition, disables tool frame |
+| `arm.register_frame(name, rotation, position)` | Register custom frame |
+| `arm.unregister_frame(name)` | Remove custom frame |
+| `arm.default_frame` | Current default frame name (property) |
+| `arm.get_pose(frame="...")` | Get pose in specified frame |
+| `arm.movel(..., frame="...")` | Move in specified frame |
+
 ### Freedrive (Teach Mode) + Recording & Replay
 
 **What it does**: Freedrive uses gravity compensation to make the arm feel "weightless" — a user can guide it by hand to any pose. Combined with recording/replay, it enables "teach once, execute forever" programming. Supports constrained freedrive (e.g., only allow Z-axis motion) and variable-speed replay.
@@ -211,14 +389,14 @@ arm.enable()
 
 try:
     # Press down with 10N in z, hold position in x/y
-    # task_frame: reference frame for force directions [x, y, z, rx, ry, rz]
+    # selection: 1=force-controlled, 0=position-controlled (must be 0 or 1)
     # limits: speed cap in force-controlled directions (m/s, rad/s)
     for _ in range(1000):
         arm.force_mode(
             selection=[0, 0, 1, 0, 0, 0],       # z = force control
             wrench=[0, 0, -10.0, 0, 0, 0],       # 10N downward
-            task_frame=[0, 0, 0, 0, 0, 0],       # base frame
             limits=[0, 0, 0.1, 0, 0, 0],         # max 0.1 m/s in z
+            frame="base",                         # reference frame for force
         )
         time.sleep(1/100)
 
@@ -529,11 +707,12 @@ backend.movej(r_forward, l_forward, duration=2.0)
 ```python
 from onero_sdk import DualArm
 
-with DualArm.create("A1R", left_channel="can0", right_channel="can1") as dual:
-    dual.movej(
-        left_joints=[0.0, 0.5, 0.0, -0.3, 0.0, 0.0, 0.0],
-        right_joints=[0.0, -0.5, 0.0, 0.3, 0.0, 0.0, 0.0],
+with DualArm.create(left_channel="can0", right_channel="can1", arm_spacing=0.30) as dual:
+    dual.movel(
+        left_position=[0.3, 0.15, 0.4, 0, 0, 0],
+        right_position=[0.3, -0.15, 0.4, 0, 0, 0],
         duration=3.0,
+        frame="world",
     )
 ```
 
@@ -554,8 +733,8 @@ class MyGripper(Gripper):
         self._pos = 0xFF
 
     def enable(self):    self.open()
-    def disable(self):   pass
-    def shutdown(self):  pass
+    def disable(self):   self.open()   # release on disable
+    def shutdown(self):  return None   # CAN bus owned by caller
     def open(self):      self._send(0xFF)
     def grasp(self):     self._send(0x00)
     def set_position(self, position: float):
@@ -616,6 +795,20 @@ Minimal config (`configs/a1.yaml`):
 ```yaml
 model: "A1R"
 channel: "can0"
+```
+
+Full config (with coordinate frame):
+
+```yaml
+model: "A1R"
+channel: "can0"
+mounting: "side_mount_right"
+world_frame: true
+base_position: [0, -0.15, 0]
+safety:
+  max_velocity: 5.0
+  max_delta_per_step: 0.03
+  timeout_frames: 10
 ```
 
 Or create directly in code:

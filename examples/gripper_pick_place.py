@@ -46,10 +46,14 @@ class CANGripper(Gripper):
         self.open()
 
     def disable(self) -> None:
-        pass
+        self.open()
 
     def close(self) -> None:
-        pass
+        self.grasp()
+
+    def shutdown(self) -> None:
+        # The CAN bus is owned by the caller and may also carry arm traffic.
+        return None
 
     def open(self) -> None:
         """Fully open."""

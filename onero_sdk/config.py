@@ -19,6 +19,9 @@ def load_arm_config(path: str) -> dict:
     Full config:
         model: "A1R"
         channel: "can0"
+        mounting: "side_mount_right"
+        world_frame: true
+        base_position: [0, -0.15, 0]
         kp: 50.0
         kd: 1.0
         urdf: "path/to/arm.urdf"
@@ -50,9 +53,16 @@ def load_dual_arm_config(path: str) -> dict:
         left:
           model: "A1L"
           channel: "can0"
+          mounting: "side_mount_left"
+          base_position: [0, 0.15, 0]
         right:
           model: "A1R"
           channel: "can1"
+          mounting: "side_mount_right"
+          base_position: [0, -0.15, 0]
+        # Optional:
+        world_frame: true
+        arm_spacing: 0.3  # alternative to per-arm base_position
 
     Returns:
         Dictionary with 'left' and 'right' arm configs.

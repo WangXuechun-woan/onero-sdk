@@ -58,7 +58,8 @@ class Arm(ArmTransformsMixin):
                  end_effector: Optional[EndEffector] = None,
                  on_error: Optional[Callable] = None,
                  mounting=None,
-                 world_frame: bool = False):
+                 world_frame: bool = False,
+                 base_position: Optional[list] = None):
         """
         Args:
             model: Arm model name (e.g. "A1R", "A1L"). Looked up in model registry.
@@ -74,13 +75,16 @@ class Arm(ArmTransformsMixin):
             world_frame: If True, all Cartesian APIs (get_pose, movel, servop, speedl,
                          force_mode, get_external_wrench) operate in world coordinates
                          (X=forward, Y=left, Z=up) instead of base frame.
+            base_position: [x, y, z] position of the arm base origin in world
+                           coordinates (meters). Required for multi-arm setups
+                           sharing a world frame. Defaults to [0, 0, 0].
         """
         self._model_info = get_model(model)
         self._on_error = on_error
         self._enabled = False
 
         # Mounting, world-frame, and TCP transforms
-        self._init_transforms(mounting, world_frame)
+        self._init_transforms(mounting, world_frame, base_position)
 
         # Create backend
         if backend is not None and channel is not None:
@@ -156,6 +160,7 @@ class Arm(ArmTransformsMixin):
 
         # Force mode state
         self._force_mode_origin: Optional[list[float]] = None
+        self._compliance: Optional[ComplianceController] = None
 
         # Control parameters from model
         self._default_kp = self._model_info.default_kp
@@ -316,12 +321,17 @@ class Arm(ArmTransformsMixin):
             self._state = state
         return state
 
-    def get_pose(self) -> tuple[np.ndarray, np.ndarray]:
+    def get_pose(self, frame: Optional[str] = None) -> tuple[np.ndarray, np.ndarray]:
         """
         Compute current end-effector pose via FK.
 
         If set_tcp() has been called, returns TCP pose (not flange).
-        If world_frame is enabled, returns pose in world coordinates.
+
+        Args:
+            frame: Coordinate frame for the returned pose.
+                   "base" = arm base frame, "world" = world frame,
+                   "tool" = current tool frame, or a custom registered name.
+                   None = use default (from constructor's world_frame param).
 
         Returns:
             (position [3], rotation_matrix [3x3])
@@ -333,7 +343,7 @@ class Arm(ArmTransformsMixin):
         with self._lock:
             joints = list(self._state.joints)
         pos, rot = fk.get_ee_pose(joints)
-        return self._output_pose_transform(pos, rot)
+        return self._output_pose_transform(pos, rot, frame=frame)
 
     # ─── Planned Motion (blocking) ───────────────────────────────────────────
 
@@ -450,7 +460,8 @@ class Arm(ArmTransformsMixin):
               rotation: Union[list, np.ndarray] = None,
               duration: Optional[float] = None,
               speed: Optional[float] = None, acceleration: Optional[float] = None,
-              kp: Optional[float] = None, kd: Optional[float] = None) -> ArmState:
+              kp: Optional[float] = None, kd: Optional[float] = None,
+              frame: Optional[str] = None) -> ArmState:
         """
         Move end-effector along a straight line in Cartesian space.
 
@@ -461,8 +472,12 @@ class Arm(ArmTransformsMixin):
             position: Target EE position [x, y, z] (meters), or a 6D pose
                       [x, y, z, rx, ry, rz] (meters + rotation vector) when
                       rotation is not provided separately.
+                      When frame="tool", this is a DISPLACEMENT relative to the
+                      current TCP pose in tool-frame axes (not an absolute target).
             rotation: Target EE rotation (3x3 matrix, quaternion [x,y,z,w],
                       or rotvec [rx,ry,rz]). Optional if position is 6D.
+                      When frame="tool", this is a relative rotation applied
+                      in the tool frame (post-multiplied).
             duration: Motion duration (seconds). Auto-computed if None.
             speed: Max tool speed (m/s). Alternative to duration —
                    duration is computed from the Cartesian distance.
@@ -471,6 +486,8 @@ class Arm(ArmTransformsMixin):
                          compute duration. Default 1.2 m/s² (UR-compatible).
             kp: Position gain.
             kd: Damping gain.
+            frame: Coordinate frame for target pose.
+                   "base"/"world"/"tool"/custom name. None = default frame.
 
         Returns:
             Final arm state.
@@ -487,7 +504,7 @@ class Arm(ArmTransformsMixin):
             n = self.num_joints
 
             # Parse pose: accept [x,y,z,rx,ry,rz] or separate position+rotation
-            target_pos, target_rot = self._parse_pose("movel", position, rotation)
+            target_pos, target_rot = self._parse_pose("movel", position, rotation, frame=frame)
 
             # Get current EE pose in base/flange frame (same frame as _parse_pose output)
             fk = self._get_fk()
@@ -528,7 +545,8 @@ class Arm(ArmTransformsMixin):
               rotation: Union[list, np.ndarray] = None,
               duration: Optional[float] = None,
               speed: Optional[float] = None, acceleration: Optional[float] = None,
-              kp: Optional[float] = None, kd: Optional[float] = None) -> ArmState:
+              kp: Optional[float] = None, kd: Optional[float] = None,
+              frame: Optional[str] = None) -> ArmState:
         """
         Move to target Cartesian pose (path not constrained to straight line).
 
@@ -545,6 +563,8 @@ class Arm(ArmTransformsMixin):
             acceleration: Joint acceleration (rad/s²). Default 1.4.
             kp: Position gain.
             kd: Damping gain.
+            frame: Coordinate frame for target pose.
+                   "base"/"world"/"tool"/custom name. None = default frame.
 
         Returns:
             Final arm state.
@@ -553,7 +573,7 @@ class Arm(ArmTransformsMixin):
         self._check_no_freedrive()
         ik = self._get_ik()
 
-        target_pos, target_rot = self._parse_pose("movep", position, rotation)
+        target_pos, target_rot = self._parse_pose("movep", position, rotation, frame=frame)
 
         # Solve IK for target
         q_target = ik.solve(target_pos, target_rot, dt=1.0 / self._control_freq)
@@ -567,7 +587,8 @@ class Arm(ArmTransformsMixin):
               target_pose: Union[list, np.ndarray],
               duration: Optional[float] = None,
               speed: Optional[float] = None, acceleration: Optional[float] = None,
-              kp: Optional[float] = None, kd: Optional[float] = None) -> ArmState:
+              kp: Optional[float] = None, kd: Optional[float] = None,
+              frame: Optional[str] = None) -> ArmState:
         """
         Move end-effector along a circular arc defined by three points.
 
@@ -583,6 +604,8 @@ class Arm(ArmTransformsMixin):
             acceleration: Tool acceleration (m/s²). Default 1.2.
             kp: Position gain.
             kd: Damping gain.
+            frame: Coordinate frame for via/target poses.
+                   "base"/"world"/"tool"/custom name. None = default frame.
 
         Returns:
             Final arm state.
@@ -599,9 +622,9 @@ class Arm(ArmTransformsMixin):
                 kd = self._default_kd if kd is None else kd
             n = self.num_joints
 
-            # Parse via and target through coordinate transforms (world→base, TCP→flange)
-            p1, r1 = self._parse_pose("movec", via_pose, None)
-            p2, r2 = self._parse_pose("movec", target_pose, None)
+            # Parse via and target through coordinate transforms
+            p1, r1 = self._parse_pose("movec", via_pose, None, frame=frame)
+            p2, r2 = self._parse_pose("movec", target_pose, None, frame=frame)
 
             # Start point: current FK in base/flange frame (same as _parse_pose output)
             with self._lock:
@@ -710,7 +733,8 @@ class Arm(ArmTransformsMixin):
 
     def servop(self, position: Union[list, np.ndarray],
                rotation: Union[list, np.ndarray] = None,
-               kp: Optional[float] = None, kd: Optional[float] = None) -> ArmState:
+               kp: Optional[float] = None, kd: Optional[float] = None,
+               frame: Optional[str] = None) -> ArmState:
         """
         Send a single task-space target (real-time control).
 
@@ -719,10 +743,15 @@ class Arm(ArmTransformsMixin):
         Args:
             position: Target EE position [x, y, z] (meters), or a 6D pose
                       [x, y, z, rx, ry, rz] when rotation is not provided.
+                      When frame="tool", this is a DISPLACEMENT relative to the
+                      current TCP pose in tool-frame axes.
             rotation: Target EE rotation (3x3 matrix, quaternion [x,y,z,w],
                       or rotvec [rx,ry,rz]). Optional if position is 6D.
+                      When frame="tool", this is a relative rotation in tool frame.
             kp: Position gain.
             kd: Damping gain.
+            frame: Coordinate frame for target pose.
+                   "base"/"world"/"tool"/custom name. None = default frame.
 
         Returns:
             Current arm state from feedback.
@@ -730,7 +759,7 @@ class Arm(ArmTransformsMixin):
         self._check_enabled()
         ik = self._get_ik()
 
-        target_pos, target_rot = self._parse_pose("servop", position, rotation)
+        target_pos, target_rot = self._parse_pose("servop", position, rotation, frame=frame)
 
         q = ik.solve(target_pos, target_rot, dt=1.0 / self._control_freq)
         joints = q.tolist() if hasattr(q, 'tolist') else list(q)
@@ -804,7 +833,8 @@ class Arm(ArmTransformsMixin):
             self._end_motion()
 
     def speedl(self, velocities: list[float], acceleration: float = 0.5,
-               duration: Optional[float] = None) -> ArmState:
+               duration: Optional[float] = None,
+               frame: Optional[str] = None) -> ArmState:
         """
         Move end-effector at target Cartesian velocity.
 
@@ -813,8 +843,12 @@ class Arm(ArmTransformsMixin):
 
         Args:
             velocities: Target EE velocity [vx, vy, vz, wx, wy, wz] (m/s, rad/s).
+                        When frame="tool", velocities are in tool-frame axes
+                        (e.g. vz = along tool Z axis).
             acceleration: Joint acceleration limit (rad/s^2).
             duration: Total motion time (seconds). Default 1s hold after ramp-up.
+            frame: Coordinate frame for the velocity vector.
+                   "base"/"world"/"tool"/custom name. None = default frame.
 
         Returns:
             Final arm state.
@@ -828,13 +862,23 @@ class Arm(ArmTransformsMixin):
             if twist.shape != (6,):
                 raise OneroConfigError(
                     f"speedl: expected 6-element twist [vx,vy,vz,wx,wy,wz], got shape {twist.shape}")
-            # Transform twist from world to base frame if world_frame is active
-            twist = self._input_twist_transform(twist)
+
+            resolved_frame = self._resolve_frame(frame)
+            is_dynamic_frame = (resolved_frame == "tool")
+
+            # For dynamic frames (tool), re-transform each tick
+            if is_dynamic_frame:
+                twist_fn = lambda: self._input_twist_transform(twist, frame=frame)
+                twist_base = twist_fn()
+            else:
+                twist_base = self._input_twist_transform(twist, frame=frame)
+                twist_fn = None
+
             n = self.num_joints
             dt = 1.0 / self._control_freq
 
             # Compute initial joint velocity for ramp timing
-            joint_vel_target = dynamics.jacobian_solve(self._state.joints, twist)
+            joint_vel_target = dynamics.jacobian_solve(self._state.joints, twist_base)
             max_vel_delta = float(np.max(np.abs(joint_vel_target)))
             ramp_time = max_vel_delta / acceleration if acceleration > 0 else 0
             ramp_steps = int(ramp_time * self._control_freq)
@@ -849,8 +893,9 @@ class Arm(ArmTransformsMixin):
                 return self._state.joints
 
             self._state = self._executor.run(
-                velocity_cartesian_frames(twist, ramp_steps, hold_steps, dt,
-                                          _get_joints, dynamics.jacobian_solve)
+                velocity_cartesian_frames(twist_base, ramp_steps, hold_steps, dt,
+                                          _get_joints, dynamics.jacobian_solve,
+                                          twist_fn=twist_fn)
             )
 
             # Gradual transition to position hold
@@ -1238,7 +1283,8 @@ class Arm(ArmTransformsMixin):
     def force_mode(self, selection: list[int], wrench: list[float],
                    task_frame: Optional[list[float]] = None,
                    limits: Optional[list[float]] = None,
-                   kp: Optional[float] = None, kd: Optional[float] = None) -> ArmState:
+                   kp: Optional[float] = None, kd: Optional[float] = None,
+                   frame: Optional[str] = None) -> ArmState:
         """
         Single-frame hybrid force/position control.
 
@@ -1258,6 +1304,10 @@ class Arm(ArmTransformsMixin):
                     None = no additional speed limiting.
             kp: Position gain for position-controlled directions.
             kd: Damping gain.
+            frame: Coordinate frame for the wrench vector.
+                   "base"/"world"/"tool"/custom name. None = default frame.
+                   When task_frame is explicitly provided, frame= is ignored
+                   and a warning is logged if both are set.
 
         Returns:
             Current arm state.
@@ -1269,6 +1319,39 @@ class Arm(ArmTransformsMixin):
         kd = self._default_kd if kd is None else kd
         n = self.num_joints
 
+        # Validate inputs before any computation
+        sel_arr = np.asarray(selection, dtype=float)
+        if sel_arr.shape != (6,):
+            raise OneroConfigError(
+                f"force_mode: selection must be 6-element, got shape {sel_arr.shape}")
+        if not np.all(np.isfinite(sel_arr)):
+            raise OneroConfigError("force_mode: selection contains NaN or Inf")
+        if not np.all((sel_arr == 0) | (sel_arr == 1)):
+            raise OneroConfigError(
+                "force_mode: selection values must be 0 or 1")
+
+        wrench_arr = np.asarray(wrench, dtype=float)
+        if wrench_arr.shape != (6,):
+            raise OneroConfigError(
+                f"force_mode: wrench must be 6-element, got shape {wrench_arr.shape}")
+        if not np.all(np.isfinite(wrench_arr)):
+            raise OneroConfigError("force_mode: wrench contains NaN or Inf")
+
+        if limits is not None:
+            limits_arr = np.asarray(limits, dtype=float)
+            if limits_arr.shape != (6,):
+                raise OneroConfigError(
+                    f"force_mode: limits must be 6-element, got shape {limits_arr.shape}")
+            if not np.all(np.isfinite(limits_arr)):
+                raise OneroConfigError("force_mode: limits contains NaN or Inf")
+            if np.any(limits_arr < 0):
+                raise OneroConfigError("force_mode: limits must be non-negative")
+
+        if not np.isfinite(kp) or kp < 0:
+            raise OneroConfigError(f"force_mode: kp must be finite and non-negative, got {kp}")
+        if not np.isfinite(kd) or kd < 0:
+            raise OneroConfigError(f"force_mode: kd must be finite and non-negative, got {kd}")
+
         with self._lock:
             q = self._state.joints
             v_joints = self._state.velocities
@@ -1276,25 +1359,42 @@ class Arm(ArmTransformsMixin):
             self._force_mode_origin = list(q)
         J = dynamics.jacobian(q)
 
-        wrench_arr = np.asarray(wrench, dtype=float)
-        # Transform wrench from world to base frame if world_frame is active
-        if self._world_frame and task_frame is None:
-            wrench_arr = self._input_wrench_transform(wrench_arr)
-
-        # Resolve task frame rotation
         task_frame_rotation = None
         if task_frame is not None:
+            if frame is not None:
+                logger.warning(
+                    "force_mode: both task_frame and frame= provided; "
+                    "task_frame takes precedence, frame= is ignored.")
             tf = np.asarray(task_frame, dtype=float)
+            if tf.shape != (6,):
+                raise OneroConfigError(
+                    f"force_mode: task_frame must be 6-element [x,y,z,rx,ry,rz], "
+                    f"got shape {tf.shape}")
+            if not np.all(np.isfinite(tf)):
+                raise OneroConfigError("force_mode: task_frame contains NaN or Inf")
             task_frame_rotation = geometry.rotvec_to_matrix(tf[3:6])
+        elif frame is not None or self._default_frame != "base":
+            task_frame_rotation = self._resolve_frame_rotation(frame)
 
-        compliance = ComplianceController(dynamics, n)
-        kps, kds, force_torques = compliance.force_step(
-            q, v_joints, selection, wrench_arr, J,
+        if self._compliance is None:
+            self._compliance = ComplianceController(dynamics, n)
+
+        # TCP moment arm: if Jacobian is at flange but wrench is specified at TCP,
+        # we need to add the r × f coupling to torque components.
+        tcp_offset_base = None
+        if self._tcp_configured:
+            fk = self._get_fk()
+            flange_pos, flange_rot = fk.get_ee_pose(list(q))
+            tcp_offset_base = flange_rot @ self._tcp_offset_pos
+
+        kps, kds, force_torques = self._compliance.force_step(
+            q, v_joints, sel_arr, wrench_arr, J,
             task_frame_rotation=task_frame_rotation,
+            tcp_offset_base=tcp_offset_base,
             limits=limits, kp=kp, kd=kd,
         )
 
-        g = np.array(self._gravity_torques(list(q)))
+        g = np.array(dynamics.gravity_torques(list(q)))
         state = self._safe_backend.command(
             positions=self._force_mode_origin,
             velocities=[0.0] * n,
@@ -1342,6 +1442,9 @@ class Arm(ArmTransformsMixin):
         Config format:
             model: "A1R"
             channel: "can0"
+            mounting: "side_mount_right"
+            world_frame: true
+            base_position: [0, -0.15, 0]
             safety:
               max_velocity: 5.0
               timeout_frames: 10
@@ -1357,6 +1460,9 @@ class Arm(ArmTransformsMixin):
         model = raw.get("model", "A1R")
         channel = raw.get("channel")
         backend = kwargs.get("backend")
+        mounting = raw.get("mounting")
+        world_frame = raw.get("world_frame", False)
+        base_position = raw.get("base_position")
 
         safety_raw = raw.get("safety", {})
         safety = SafetyConfig(
@@ -1366,8 +1472,11 @@ class Arm(ArmTransformsMixin):
             enabled=safety_raw.get("enabled", True),
         ) if safety_raw else None
 
+        extra = {k: v for k, v in kwargs.items()
+                 if k not in ("backend", "mounting", "world_frame", "base_position")}
         return cls(model=model, channel=channel, backend=backend,
-                   safety=safety, **{k: v for k, v in kwargs.items() if k != "backend"})
+                   mounting=mounting, world_frame=world_frame,
+                   base_position=base_position, safety=safety, **extra)
 
     def set_gains(self, kp: float, kd: float) -> None:
         """Update default control gains (also updates GainPolicy fallback)."""
@@ -1591,14 +1700,16 @@ class Arm(ArmTransformsMixin):
         except Exception as e:
             logger.debug(f"Auto payload estimate failed: {e}")
 
-    def get_external_wrench(self) -> np.ndarray:
+    def get_external_wrench(self, frame: Optional[str] = None) -> np.ndarray:
         """
         Estimate external force/torque at the end-effector.
 
         Uses torque residual (measured - model predicted) and Jacobian
         to estimate the external wrench. Requires dynamics model.
 
-        If world_frame is enabled, returns wrench in world coordinates.
+        Args:
+            frame: Coordinate frame for the returned wrench.
+                   "base"/"world"/"tool"/custom name. None = default frame.
 
         Returns:
             Estimated wrench [fx, fy, fz, tx, ty, tz] (N, Nm).
@@ -1610,7 +1721,7 @@ class Arm(ArmTransformsMixin):
             self._state.velocities,
             self._state.torques,
         )
-        return self._output_wrench_transform(wrench)
+        return self._output_wrench_transform(wrench, frame=frame)
 
     def check_collision(self) -> bool:
         """
@@ -1886,7 +1997,7 @@ class Arm(ArmTransformsMixin):
         """Send velocity command through safe backend (clamping applied)."""
         return self._safe_backend.command_velocity(velocities)
 
-    def _parse_pose(self, method: str, position, rotation):
+    def _parse_pose(self, method: str, position, rotation, frame=None):
         """Parse position/rotation arguments into (pos_3d, rot_matrix) in base frame."""
         pos_arr = np.asarray(position, dtype=float)
         if rotation is None:
@@ -1902,8 +2013,7 @@ class Arm(ArmTransformsMixin):
                     f"[x,y,z,rx,ry,rz] (6D), got shape {pos_arr.shape}")
         else:
             pos, rot = pos_arr, geometry.ensure_rotation_matrix(rotation)
-        # Apply world→base and TCP→flange transforms
-        return self._input_pose_transform(pos, rot)
+        return self._input_pose_transform(pos, rot, frame=frame)
 
     def _get_fk(self):
         """Lazy-init FK from URDF."""

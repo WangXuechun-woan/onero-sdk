@@ -153,15 +153,20 @@ def velocity_joint_frames(target_vel: list, ramp_steps: int, hold_steps: int, dt
 
 
 def velocity_cartesian_frames(twist, ramp_steps: int, hold_steps: int, dt: float,
-                              get_joints_fn, jacobian_solve_fn):
+                              get_joints_fn, jacobian_solve_fn,
+                              twist_fn=None):
+    """twist_fn: if provided, called each tick to get current base-frame twist (for dynamic frames)."""
     for step in range(ramp_steps):
         alpha = (step + 1) / max(ramp_steps, 1)
-        joint_vel = jacobian_solve_fn(get_joints_fn(), alpha * twist)
+        current_twist = twist_fn() if twist_fn else twist
+        joint_vel = jacobian_solve_fn(get_joints_fn(), alpha * current_twist)
         yield VelocityFrame(velocities=joint_vel.tolist(), dt=dt)
     for step in range(hold_steps):
-        joint_vel = jacobian_solve_fn(get_joints_fn(), twist)
+        current_twist = twist_fn() if twist_fn else twist
+        joint_vel = jacobian_solve_fn(get_joints_fn(), current_twist)
         yield VelocityFrame(velocities=joint_vel.tolist(), dt=dt)
     for step in range(ramp_steps):
         alpha = 1.0 - (step + 1) / max(ramp_steps, 1)
-        joint_vel = jacobian_solve_fn(get_joints_fn(), alpha * twist)
+        current_twist = twist_fn() if twist_fn else twist
+        joint_vel = jacobian_solve_fn(get_joints_fn(), alpha * current_twist)
         yield VelocityFrame(velocities=joint_vel.tolist(), dt=dt)

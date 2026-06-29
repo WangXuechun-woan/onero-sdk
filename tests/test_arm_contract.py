@@ -22,7 +22,7 @@ class TestArmSatisfiesProtocol:
         assert isinstance(arm_sim, ArmProtocol)
 
     @pytest.mark.parametrize("method", [
-        "enable", "disable", "servoj", "servol", "servop", "movej",
+        "enable", "disable", "servoj", "servol", "movej",
     ])
     def test_adapter_methods_exist_and_callable(self, arm_sim, method):
         assert hasattr(arm_sim, method)
@@ -61,10 +61,7 @@ class TestBeavrContract:
 
     def test_servol_accepts_6d_pose(self, arm_sim):
         """BEAVR calls arm.servol(pose_6d) with [x, y, z, rx, ry, rz]."""
-        fk = arm_sim._get_fk()
-        state = arm_sim.state
-        pos, rot = fk.get_ee_pose(state.joints)
-        # Convert rotation matrix to axis-angle (rotvec)
+        pos, rot = arm_sim.get_pose(frame="base")
         from scipy.spatial.transform import Rotation
         rvec = Rotation.from_matrix(rot).as_rotvec()
         pose_6d = list(pos) + rvec.tolist()

@@ -25,7 +25,7 @@ Example — custom end effector::
             self._bus.send(...)   # your disable frame
 
         def shutdown(self):
-            pass  # release resources
+            self._bus.close()   # release owned resources
 
     arm = Arm("A1R", channel="can0", end_effector=MyHand(bus, 0x08))
 """

@@ -1,8 +1,13 @@
 # Dual A1 arm configuration
+world_frame: true
+arm_spacing: 0.30
+
 left:
   model: "A1L"
   channel: "can0"
+  mounting: "side_mount_left"
 
 right:
   model: "A1R"
   channel: "can1"
+  mounting: "side_mount_right"

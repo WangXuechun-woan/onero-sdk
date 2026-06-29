@@ -50,11 +50,28 @@ try:
     arm.force_mode_disable()
     print("  完成")
 
-    # === 场景 3: 带 task_frame 的力控 ===
+    # === 场景 3: 用 frame= 指定力控坐标系 ===
     print("\n场景 3: 在倾斜面上施加法向力")
-    print("  task_frame 可以指定力控的参考坐标系 (用旋转向量)")
-    # 例如: 在绕 Y 轴旋转 30° 的斜面上沿法线方向下压
+    print("  方式 A: 用 frame= 指定力控参考坐标系")
+    # 注册一个绕 Y 轴旋转 30° 的自定义坐标系
     import math
+    import numpy as np
+    from onero_sdk.geometry import rotvec_to_matrix
+    R_tilted = rotvec_to_matrix([0, math.radians(30), 0])
+    arm.register_frame("tilted_surface", rotation=R_tilted)
+
+    t0 = time.time()
+    while time.time() - t0 < 2.0:
+        arm.force_mode(
+            selection=[0, 0, 1, 0, 0, 0],
+            wrench=[0, 0, -5, 0, 0, 0],
+            frame="tilted_surface",  # 力方向沿倾斜面法线
+        )
+    arm.force_mode_disable()
+    print("  完成")
+
+    # 方式 B: 用 task_frame (旧 API，仍然兼容)
+    print("  方式 B: 用 task_frame= (旧 API 兼容)")
     t0 = time.time()
     while time.time() - t0 < 2.0:
         arm.force_mode(

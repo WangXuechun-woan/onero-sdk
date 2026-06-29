@@ -14,7 +14,9 @@ def rotvec_to_matrix(rotvec) -> np.ndarray:
     """Convert rotation vector (axis-angle compact form) to 3x3 rotation matrix."""
     rotvec = np.asarray(rotvec, dtype=float)
     if not np.all(np.isfinite(rotvec)):
-        return np.eye(3)
+        from .exceptions import OneroConfigError
+        raise OneroConfigError(
+            f"Rotation vector contains non-finite values: {rotvec.tolist()}")
     angle = np.linalg.norm(rotvec)
     if angle < 1e-10:
         return np.eye(3)
