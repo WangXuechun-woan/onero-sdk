@@ -29,7 +29,7 @@ class TrajectoryClient(Node):
         super().__init__("trajectory_client")
         self._action_client = ActionClient(
             self, FollowJointTrajectory,
-            "/onero_arm_driver/follow_joint_trajectory")
+            "/arm_controller/follow_joint_trajectory")
 
         self.get_logger().info("等待 FollowJointTrajectory action server...")
         self._action_client.wait_for_server()
@@ -45,7 +45,7 @@ class TrajectoryClient(Node):
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = JointTrajectory()
         goal.trajectory.joint_names = [
-            f"joint_{i+1}" for i in range(7)
+            f"joint{i+1}-a1_r" for i in range(7)
         ]
 
         for pt in points:

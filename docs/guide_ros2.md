@@ -122,10 +122,8 @@ ros2 launch onero_ros2 bringup.launch.py \
 
 启动后终端会输出：
 ```
-[INFO] [onero_arm_driver]: Onero A1 node started
-[INFO] [onero_arm_driver]: CAN channel: can0
-[INFO] [onero_arm_driver]: Control freq: 200 Hz
-[INFO] [onero_arm_driver]: Waiting for enable...
+[INFO] [onero_arm_driver]: Connected to CAN 'can0', model=A1R
+[INFO] [onero_arm_driver]: Onero arm driver started (call ~/enable to activate)
 ```
 
 ### Step 3: 使能机械臂
@@ -165,17 +163,6 @@ ros2 topic echo /joint_states
 python examples/ros2/01_ros2_joint_states.py
 ```
 
-### 发送 movej 指令
-
-```bash
-# 命令行
-ros2 service call /onero_arm_driver/movej onero_msgs/srv/MoveJ \
-    "{positions: [0.0, -0.5, 0.0, -1.0, 0.0, 0.5, 0.0], speed: 1.0, acceleration: 2.0}"
-
-# Python
-python examples/ros2/02_ros2_movej_service.py
-```
-
 ### 发送轨迹
 
 ```bash
@@ -183,9 +170,9 @@ python examples/ros2/02_ros2_movej_service.py
 python examples/ros2/03_ros2_trajectory.py
 
 # 命令行 (通过 action)
-ros2 action send_goal /onero_arm_driver/follow_joint_trajectory \
+ros2 action send_goal /arm_controller/follow_joint_trajectory \
     control_msgs/action/FollowJointTrajectory \
-    "{trajectory: {joint_names: ['joint_1','joint_2','joint_3','joint_4','joint_5','joint_6','joint_7'], \
+    "{trajectory: {joint_names: ['joint1-a1_r','joint2-a1_r','joint3-a1_r','joint4-a1_r','joint5-a1_r','joint6-a1_r','joint7-a1_r'], \
     points: [{positions: [0,0,0,0,0,0,0], time_from_start: {sec: 2}}]}}"
 ```
 
@@ -198,8 +185,6 @@ ros2 action send_goal /onero_arm_driver/follow_joint_trajectory \
 | 话题名 | 类型 | 方向 | 频率 | 说明 |
 |--------|------|------|------|------|
 | `/joint_states` | sensor_msgs/JointState | 发布 | 200Hz | 关节角度、速度、力矩 |
-| `/onero_arm_driver/tcp_pose` | geometry_msgs/PoseStamped | 发布 | 200Hz | 末端位姿 |
-| `/onero_arm_driver/status` | onero_msgs/ArmStatus | 发布 | 10Hz | 运行状态、温度、错误码 |
 
 ### 服务 (Services)
 
@@ -207,18 +192,16 @@ ros2 action send_goal /onero_arm_driver/follow_joint_trajectory \
 |--------|------|------|
 | `/onero_arm_driver/enable` | std_srvs/Trigger | 使能电机 |
 | `/onero_arm_driver/disable` | std_srvs/Trigger | 去使能电机 |
-| `/onero_arm_driver/movej` | onero_msgs/MoveJ | 关节运动 |
-| `/onero_arm_driver/movel` | onero_msgs/MoveL | 直线运动 |
-| `/onero_arm_driver/stop` | std_srvs/Trigger | 停止运动 |
-| `/onero_arm_driver/set_tcp` | onero_msgs/SetTCP | 设置工具坐标系 |
-| `/onero_arm_driver/freedrive_enable` | std_srvs/Trigger | 开启零力拖动 |
-| `/onero_arm_driver/freedrive_disable` | std_srvs/Trigger | 关闭零力拖动 |
 
 ### 动作 (Actions)
 
 | 动作名 | 类型 | 说明 |
 |--------|------|------|
-| `/onero_arm_driver/follow_joint_trajectory` | control_msgs/FollowJointTrajectory | 轨迹执行 |
+| `/arm_controller/follow_joint_trajectory` | control_msgs/FollowJointTrajectory | 轨迹执行 (兼容 MoveIt2) |
+
+### 关节名
+
+节点发布的关节名为 `joint1-a1_r` ~ `joint7-a1_r`（与 URDF 一致）。发送轨迹时必须使用这些名称。
 
 ### 参数 (Parameters)
 
@@ -235,41 +218,50 @@ ros2 param set /onero_arm_driver kd 3.0
 |--------|------|--------|------|
 | `can_channel` | string | "can0" | CAN 接口名 |
 | `model` | string | "A1R" | 机械臂型号 |
-| `control_freq` | int | 200 | 控制频率 (Hz) |
-| `kp` | double | 80.0 | 位置增益 |
-| `kd` | double | 2.0 | 速度增益 |
+| `control_rate` | double | 200.0 | 控制频率 (Hz) |
+| `kp` | double | 50.0 | 位置增益 |
+| `kd` | double | 1.0 | 速度增益 |
 
 ---
 
 ## 6. 与其他节点协作
 
-### 在自己的节点中调用
+### 通过 Action 发送轨迹
 
 ```python
 import rclpy
 from rclpy.node import Node
-from onero_msgs.srv import MoveJ
+from rclpy.action import ActionClient
+from control_msgs.action import FollowJointTrajectory
+from trajectory_msgs.msg import JointTrajectoryPoint
+from builtin_interfaces.msg import Duration
+
+JOINT_NAMES = [
+    "joint1-a1_r", "joint2-a1_r", "joint3-a1_r", "joint4-a1_r",
+    "joint5-a1_r", "joint6-a1_r", "joint7-a1_r",
+]
 
 class MyNode(Node):
     def __init__(self):
         super().__init__('my_node')
-        self.movej_client = self.create_client(MoveJ, '/onero_arm_driver/movej')
-        self.movej_client.wait_for_service()
+        self._action_client = ActionClient(
+            self, FollowJointTrajectory,
+            '/arm_controller/follow_joint_trajectory')
+        self._action_client.wait_for_server()
 
-    def go_to(self, positions, speed=1.0):
-        req = MoveJ.Request()
-        req.positions = positions
-        req.speed = speed
-        req.acceleration = 2.0
-        future = self.movej_client.call_async(req)
-        rclpy.spin_until_future_complete(self, future)
-        return future.result().success
+    def go_to(self, positions, duration_sec=2.0):
+        goal = FollowJointTrajectory.Goal()
+        goal.trajectory.joint_names = JOINT_NAMES
+        pt = JointTrajectoryPoint()
+        pt.positions = positions
+        pt.time_from_start = Duration(sec=int(duration_sec))
+        goal.trajectory.points = [pt]
+        return self._action_client.send_goal(goal)
 ```
 
 ### 与视觉节点配合
 
 ```python
-# 订阅相机检测结果, 机械臂去抓取
 from geometry_msgs.msg import PoseStamped
 
 class VisualGrasping(Node):
@@ -278,13 +270,14 @@ class VisualGrasping(Node):
         self.create_subscription(
             PoseStamped, '/detection/target_pose',
             self.on_target_detected, 10)
-        self.movel_client = self.create_client(MoveL, '/onero_arm_driver/movel')
+        self._action_client = ActionClient(
+            self, FollowJointTrajectory,
+            '/arm_controller/follow_joint_trajectory')
 
     def on_target_detected(self, msg):
-        # msg.pose 是目标在基座坐标系下的位姿
-        req = MoveL.Request()
-        req.position = [msg.pose.position.x, msg.pose.position.y, msg.pose.position.z]
-        self.movel_client.call_async(req)
+        # 通过 SDK 做 IK 解算后，用 action 发送关节轨迹
+        # (需要在节点中嵌入 SDK 的 IK 求解器)
+        pass
 ```
 
 ### 录制与回放 (rosbag)

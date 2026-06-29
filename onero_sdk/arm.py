@@ -737,6 +737,8 @@ class Arm(ArmTransformsMixin):
 
         return self.servoj(joints, kp=kp, kd=kd)
 
+    servol = servop
+
     # ─── Velocity Control ────────────────────────────────────────────────────
 
     def speedj(self, velocities: list[float], acceleration: float = 1.0,
