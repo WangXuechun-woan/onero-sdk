@@ -752,14 +752,55 @@ backend.movej(r_forward, l_forward, duration=2.0)
 ```python
 from onero_sdk import DualArm
 
+# ─── Basic: arm_spacing auto-computes base_position ───
+# arm_spacing=0.30 means 30cm between arm bases along Y axis
+# Equivalent to base_position_left=[0, 0.15, 0], base_position_right=[0, -0.15, 0]
+# World origin is centered between both arms
 with DualArm.create(left_channel="can0", right_channel="can1", arm_spacing=0.30) as dual:
+    # frame="world" — both arms share a unified coordinate system
     dual.movel(
         left_position=[0.3, 0.15, 0.4, 0, 0, 0],
         right_position=[0.3, -0.15, 0.4, 0, 0, 0],
         duration=3.0,
         frame="world",
     )
+
+    # Control arms independently — still in world frame
+    dual.left.movel([0.3, 0.2, 0.5, 0, 0, 0], frame="world")
+    dual.right.movel([0.3, -0.2, 0.5, 0, 0, 0], frame="world")
+
+    # Switch to per-arm base frame (each arm's local reference)
+    dual.left.movel([0.2, 0.0, 0.3, 0, 0, 0], frame="base")
+    dual.right.movel([0.2, 0.0, 0.3, 0, 0, 0], frame="base")
+
+# ─── Advanced: custom base_position (asymmetric mounting) ───
+# Example: left arm on a taller bracket, right arm slightly lower
+with DualArm.create(
+    left_channel="can0", right_channel="can1",
+    base_position_left=[0.0, 0.20, 0.82],   # left base in world coords
+    base_position_right=[0.0, -0.18, 0.80],  # right base (slightly lower)
+) as dual:
+    # Same world coordinate — both arms converge to the same point
+    target = [0.35, 0.0, 0.5, 0, 0, 0]
+    dual.movel(left_position=target, right_position=target,
+               duration=3.0, frame="world")
 ```
+
+**Coordinate frame relationship**:
+
+```
+world origin (centered between arms)
+    │
+    ├─ Y=+spacing/2 ──► left arm base
+    │                    └─ mounting="side_mount_left" defines rotation
+    │
+    └─ Y=-spacing/2 ──► right arm base
+                         └─ mounting="side_mount_right" defines rotation
+```
+
+- `arm_spacing`: sets Y-axis distance only (shortcut for symmetric mounting), world origin at midpoint
+- `base_position_left/right`: full control over each arm's base [x, y, z] in world (for asymmetric setups)
+- All `frame="world"` coordinates are interpreted identically by both arms — same point means same point
 
 ### End Effector (Gripper / Dexterous Hand)
 

@@ -756,14 +756,55 @@ backend.movej(r_forward, l_forward, duration=2.0)
 ```python
 from onero_sdk import DualArm
 
+# ─── 基本用法：arm_spacing 自动计算 base_position ───
+# arm_spacing=0.30 表示两臂 base 间距 30cm（沿 Y 轴）
+# 等价于 base_position_left=[0, 0.15, 0], base_position_right=[0, -0.15, 0]
+# world 原点在两臂正中间
 with DualArm.create(left_channel="can0", right_channel="can1", arm_spacing=0.30) as dual:
+    # frame="world" 下两臂使用统一坐标系
     dual.movel(
         left_position=[0.3, 0.15, 0.4, 0, 0, 0],
         right_position=[0.3, -0.15, 0.4, 0, 0, 0],
         duration=3.0,
         frame="world",
     )
+
+    # 独立控制单臂——同样在 world 坐标系下
+    dual.left.movel([0.3, 0.2, 0.5, 0, 0, 0], frame="world")
+    dual.right.movel([0.3, -0.2, 0.5, 0, 0, 0], frame="world")
+
+    # 切换到各自 base 坐标系（各臂独立参考系）
+    dual.left.movel([0.2, 0.0, 0.3, 0, 0, 0], frame="base")
+    dual.right.movel([0.2, 0.0, 0.3, 0, 0, 0], frame="base")
+
+# ─── 进阶：自定义 base_position（适配非对称安装）───
+# 例如：左臂挂在桌面左侧支架，右臂挂在右侧支架（不同高度）
+with DualArm.create(
+    left_channel="can0", right_channel="can1",
+    base_position_left=[0.0, 0.20, 0.82],   # 左臂 base 在 world 中的位置
+    base_position_right=[0.0, -0.18, 0.80],  # 右臂 base（高度略低）
+) as dual:
+    # 同一 world 坐标——两臂会聚到桌面中心同一点
+    target = [0.35, 0.0, 0.5, 0, 0, 0]
+    dual.movel(left_position=target, right_position=target,
+               duration=3.0, frame="world")
 ```
+
+**坐标系关系**：
+
+```
+world 原点 (两臂中间)
+    │
+    ├─ Y=+spacing/2 ──► left arm base
+    │                    └─ mounting="side_mount_left" 定义旋转
+    │
+    └─ Y=-spacing/2 ──► right arm base
+                         └─ mounting="side_mount_right" 定义旋转
+```
+
+- `arm_spacing`：只设置 Y 轴间距（对称安装的快捷方式），world 原点在正中间
+- `base_position_left/right`：完全控制各臂 base 在 world 中的 [x, y, z]（非对称安装时使用）
+- 所有 `frame="world"` 下的坐标，两臂解释完全一致——同一个点就是同一个点
 
 ### 末端执行器（夹爪 / 灵巧手）
 
