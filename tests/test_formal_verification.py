@@ -107,16 +107,17 @@ class TestSLERPFormal:
 class TestArcAngleFormal:
     """signed_arc_angle 对各种圆弧角度的数学正确性."""
 
-    @pytest.mark.parametrize("via_deg", [30, 45, 60, 90, 120, 150])
-    @pytest.mark.parametrize("end_deg", [60, 90, 120, 180, 240, 300, 350])
+    @pytest.mark.parametrize("via_deg,end_deg", [
+        (v, e)
+        for v in [30, 45, 60, 90, 120, 150]
+        for e in [60, 90, 120, 180, 240, 300, 350]
+        if v < e
+    ])
     def test_arc_angle_positive_direction(self, via_deg, end_deg):
         """
         正方向: via 在 start→end 之间 → 角度符号正确.
         只测 via_deg < end_deg 的有效组合.
         """
-        if via_deg >= end_deg:
-            pytest.skip("via must be between start and end")
-
         normal = np.array([0, 0, 1.0])
         v0 = np.array([1.0, 0.0, 0.0])
         v1 = np.array([math.cos(math.radians(via_deg)),

@@ -14,7 +14,7 @@
 - 动力学原语：雅可比矩阵、重力补偿力矩、科氏力力矩
 - 动力学参数标定（辨识）
 - 运动学标定（单点约束法，提高绝对定位精度）
-- 碰撞检测与末端外力估计
+- 多策略碰撞检测（无需已知 payload）与末端外力估计
 - 高级轨迹规划：Ruckig（在线 jerk-limited）、TOPP-RA（时间最优）
 - 可配置负载（影响动力学精度）
 - 轨迹录制与回放
@@ -436,23 +436,68 @@ finally:
 
 ### 碰撞检测
 
-**特性说明**：实时监测各关节力矩是否超过预期值，超过阈值判定为碰撞并触发保护动作。基于动力学模型计算预期力矩，与实际力矩的差异即为外部接触力。
+**特性说明**：多策略碰撞检测系统，通过三个独立通道从不同物理信号检测碰撞，**无需精确动力学模型或已知 payload**。自适应基线能自动跟踪 payload 缓慢变化（如抬升衣物），同时捕捉碰撞瞬间的突变。
 
-**适用场景**：当机械臂在共享工作空间中运动、可能与人或障碍物接触时使用。例如：人机协作场景的安全防护、未知环境中的自主探索、以及防止工件或工具损坏。
+**三个检测通道**：
+
+| 通道 | 检测对象 | 原理 | 需要模型 |
+|------|----------|------|----------|
+| Impact (主力) | 快速碰撞 | dτ/dt 突变 + 自适应基线 | 不需要 |
+| Energy (辅助) | 中速碰撞 | 关节功率异常 P=τ·ω | 不需要 |
+| Residual (可选) | 慢速推压 | 残差力矩 | 需要 |
+
+**适用场景**：当机械臂在共享工作空间中运动、可能与人或障碍物接触时使用。例如：未知环境中的自主探索、payload 不确定的动态操作。
+
+> **注意**：这是软件启发式检测，不是 safety-rated protective stop。阈值需在真实硬件上验证后方可用于安全相关场景。
 
 ```python
 from onero_sdk import Arm
+from onero_sdk.collision import CollisionConfig, CollisionResponse
+
+arm = Arm("A1R", channel="can0")
+arm.enable()
+
+# 最简用法——默认参数，碰撞时自动停止（零配置）
+arm.enable_collision_detection()
+arm.movej([0.5, -0.3, 0.2, 0.4, -0.1, 0.3, 0.0])
+
+# 带回调——碰撞时记录但不停止
+def on_hit(event):
+    print(f"碰撞: {event.channel} @ joint {event.joint_index}, "
+          f"强度 {event.severity:.1f}x")
+
+config = CollisionConfig(response=CollisionResponse.CALLBACK)
+arm.enable_collision_detection(config=config, on_collision=on_hit)
+
+# 高灵敏度——精密操作场景
+config = CollisionConfig(impact_threshold=25.0, energy_threshold=8.0)
+arm.enable_collision_detection(config=config)
+
+# 力控期间关闭（力控本身是主动接触）
+arm.disable_collision_detection()
+# arm.force_mode(task_frame, selection, wrench, limits)
+# arm.force_mode_disable()
+arm.enable_collision_detection()
+
+# 查询最后碰撞事件
+if arm.last_collision:
+    e = arm.last_collision
+    print(f"上次碰撞: {e.channel}, joint {e.joint_index}, "
+          f"magnitude {e.magnitude:.1f}")
+```
+
+**覆盖范围**：自动碰撞检测在所有规划运动中生效（`movej` / `movel` / `movep` / `movec` / `speedj` / `speedl`）。`servoj` / `servop` / `force_mode` 不覆盖（用户自行管理）。
+
+**旧版 API**（手动模式，仍可用）：
+
+```python
 from onero_sdk.safety import SafetyConfig
 
-# 配置碰撞阈值 (Nm)
+# 基于残差力矩的手动检测（需要已知 payload）
 safety = SafetyConfig(collision_threshold=5.0, collision_stop=True)
 arm = Arm("A1R", channel="can0", safety=safety)
 arm.enable()
-
-# 手动检查（collision_stop=False 时有用）
 collision = arm.check_collision()
-if collision:
-    print("检测到外部接触!")
 ```
 
 ### 负载配置

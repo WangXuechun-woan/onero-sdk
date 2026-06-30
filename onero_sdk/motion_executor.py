@@ -54,7 +54,8 @@ class MotionExecutor:
                  recorder: Recorder, clock: ControlClock,
                  get_state: Callable[[], ArmState],
                  set_state: Callable[[ArmState], None],
-                 gravity_torques_fn: Optional[Callable[[list[float]], list[float]]] = None):
+                 gravity_torques_fn: Optional[Callable[[list[float]], list[float]]] = None,
+                 collision_detector=None):
         self._backend = backend
         self._safety = safety
         self._recorder = recorder
@@ -62,6 +63,14 @@ class MotionExecutor:
         self._get_state = get_state
         self._set_state = set_state
         self._gravity_torques_fn = gravity_torques_fn
+        self._collision_detector = collision_detector
+        if collision_detector is not None:
+            from .collision import CollisionResponse
+            self._collision_response_stop = (
+                CollisionResponse.STOP, CollisionResponse.BOTH,
+            )
+        else:
+            self._collision_response_stop = ()
 
     def run(self, frames: FrameGenerator) -> ArmState:
         """
@@ -74,6 +83,9 @@ class MotionExecutor:
         """
         self._clock.reset()
         state = self._get_state()
+
+        if self._collision_detector is not None:
+            self._collision_detector.reset()
 
         for frame in frames:
             if self._safety.emergency_stopped:
@@ -94,7 +106,7 @@ class MotionExecutor:
                     state = self._backend.command_velocity(frame.velocities)
             else:
                 if self._gravity_torques_fn:
-                    g = self._gravity_torques_fn(frame.positions)
+                    g = self._gravity_torques_fn(list(state.joints))
                     torques = [t + gt for t, gt in zip(frame.torques, g)]
                 else:
                     torques = frame.torques
@@ -105,6 +117,18 @@ class MotionExecutor:
                     kds=frame.kds,
                     torques=torques,
                 )
+
+            if self._collision_detector is not None:
+                event = self._collision_detector.process_frame(
+                    state.joints, state.velocities, state.torques)
+                if event is not None and self._collision_detector.response in self._collision_response_stop:
+                    self._safety.trigger_emergency_stop(
+                        event.joint_index,
+                        f"Collision detected ({event.channel}): joint {event.joint_index}, "
+                        f"magnitude {event.magnitude:.1f} > threshold {event.threshold:.1f}",
+                    )
+                    self._set_state(state)
+                    break
 
             self._set_state(state)
             self._recorder.record_frame(

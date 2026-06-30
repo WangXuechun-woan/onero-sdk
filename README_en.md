@@ -14,7 +14,7 @@ Python SDK for controlling onero A1 robotic arms.
 - Dynamics primitives: Jacobian, gravity torque, Coriolis torque
 - Dynamics calibration (parameter identification)
 - Kinematic calibration (single-point constraint, improves absolute accuracy)
-- Collision detection and external wrench estimation
+- Multi-strategy collision detection (no payload model required) and external wrench estimation
 - Advanced trajectory planning: Ruckig (online jerk-limited), TOPP-RA (time-optimal)
 - Configurable payload (affects dynamics accuracy)
 - Trajectory recording and replay
@@ -434,23 +434,68 @@ finally:
 
 ### Collision Detection
 
-**What it does**: Real-time monitoring of joint torque anomalies. Compares actual motor torques against dynamics model predictions — the difference indicates external contact forces.
+**What it does**: Multi-strategy collision detection system with three independent channels that detect collisions through different physical signals — **no accurate dynamics model or known payload required**. Adaptive baselines automatically track slow payload changes (e.g., lifting a garment) while catching sudden collision spikes.
 
-**When to use**: When the arm operates in shared workspaces where it may contact people or obstacles. Examples: human-robot collaboration safety, autonomous exploration in unknown environments, preventing damage to workpieces or tools.
+**Three detection channels**:
+
+| Channel | Detects | Principle | Model needed |
+|---------|---------|-----------|--------------|
+| Impact (primary) | Fast collisions | dτ/dt spike + adaptive baseline | No |
+| Energy (secondary) | Medium-speed collisions | Joint power anomaly P=τ·ω | No |
+| Residual (optional) | Slow pushes | Torque residual | Yes |
+
+**When to use**: When the arm operates in shared workspaces where it may contact people or obstacles. Examples: autonomous exploration in unknown environments, dynamic operations with uncertain payload.
+
+> **Note**: This is a software heuristic detector, not a safety-rated protective stop. Thresholds must be validated on real hardware before use in safety-critical scenarios.
 
 ```python
 from onero_sdk import Arm
+from onero_sdk.collision import CollisionConfig, CollisionResponse
+
+arm = Arm("A1R", channel="can0")
+arm.enable()
+
+# Simplest — default params, auto-stop on collision (zero config)
+arm.enable_collision_detection()
+arm.movej([0.5, -0.3, 0.2, 0.4, -0.1, 0.3, 0.0])
+
+# With callback — log collision without stopping
+def on_hit(event):
+    print(f"Collision: {event.channel} @ joint {event.joint_index}, "
+          f"severity {event.severity:.1f}x")
+
+config = CollisionConfig(response=CollisionResponse.CALLBACK)
+arm.enable_collision_detection(config=config, on_collision=on_hit)
+
+# High sensitivity — for precision tasks
+config = CollisionConfig(impact_threshold=25.0, energy_threshold=8.0)
+arm.enable_collision_detection(config=config)
+
+# Disable during force control (force mode is intentional contact)
+arm.disable_collision_detection()
+# arm.force_mode(task_frame, selection, wrench, limits)
+# arm.force_mode_disable()
+arm.enable_collision_detection()
+
+# Query the last collision event
+if arm.last_collision:
+    e = arm.last_collision
+    print(f"Last collision: {e.channel}, joint {e.joint_index}, "
+          f"magnitude {e.magnitude:.1f}")
+```
+
+**Coverage**: Automatic collision detection is active during all planned motions (`movej` / `movel` / `movep` / `movec` / `speedj` / `speedl`). Not covered by `servoj` / `servop` / `force_mode` (user-managed).
+
+**Legacy API** (manual mode, still available):
+
+```python
 from onero_sdk.safety import SafetyConfig
 
-# Configure collision threshold (Nm)
+# Residual-based manual detection (requires known payload)
 safety = SafetyConfig(collision_threshold=5.0, collision_stop=True)
 arm = Arm("A1R", channel="can0", safety=safety)
 arm.enable()
-
-# Manual check (useful when collision_stop=False)
 collision = arm.check_collision()
-if collision:
-    print("External contact detected!")
 ```
 
 ### Payload Configuration

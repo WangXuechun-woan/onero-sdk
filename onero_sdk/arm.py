@@ -148,6 +148,7 @@ class Arm(ArmTransformsMixin):
         self._clock = ControlClock()
 
         # Motion executor (unified control loop — uses safe backend)
+        self._collision_detector = None
         self._executor = MotionExecutor(
             backend=self._safe_backend,
             safety=self._safety,
@@ -1740,6 +1741,83 @@ class Arm(ArmTransformsMixin):
             self._state.torques,
         )
         return self._safety.check_collision(residuals)
+
+    def enable_collision_detection(self, config=None, on_collision=None):
+        """
+        Enable automatic collision detection during all planned motions
+        (movej/movel/movep/movec/speedj/speedl).
+
+        Uses model-free detection by default (no dynamics model required).
+        Works with unknown and dynamically changing payloads.
+
+        Note: does not cover servoj/servop (user controls loop — call
+        check_collision() yourself) or force_mode (intentional contact).
+
+        Args:
+            config: CollisionConfig for advanced tuning. Defaults work for most cases.
+            on_collision: Optional callback(CollisionEvent) invoked on detection.
+                          Called from the control loop thread. Must not block.
+        """
+        from copy import deepcopy
+        from .collision import CollisionConfig, CollisionDetector
+
+        self._check_enabled()
+
+        if config is None:
+            config = CollisionConfig(control_freq=self._control_freq)
+        else:
+            config = deepcopy(config)
+            config.control_freq = self._control_freq
+
+        residual_fn = None
+        if config.residual_enabled:
+            try:
+                dynamics = self._get_dynamics()
+                residual_fn = dynamics.torque_residual
+            except Exception:
+                config.residual_enabled = False
+                logger.warning(
+                    "Residual collision channel disabled: dynamics model unavailable. "
+                    "Install onero-sdk[dynamics] for model-based detection."
+                )
+
+        self._collision_detector = CollisionDetector(
+            num_joints=self.num_joints,
+            config=config,
+            on_collision=on_collision,
+            residual_fn=residual_fn,
+        )
+
+        self._executor = MotionExecutor(
+            backend=self._safe_backend,
+            safety=self._safety,
+            recorder=self._recorder,
+            clock=self._clock,
+            get_state=lambda: self._state,
+            set_state=self._set_state_locked,
+            gravity_torques_fn=self._gravity_torques,
+            collision_detector=self._collision_detector,
+        )
+
+    def disable_collision_detection(self):
+        """Disable automatic collision detection."""
+        self._collision_detector = None
+        self._executor = MotionExecutor(
+            backend=self._safe_backend,
+            safety=self._safety,
+            recorder=self._recorder,
+            clock=self._clock,
+            get_state=lambda: self._state,
+            set_state=self._set_state_locked,
+            gravity_torques_fn=self._gravity_torques,
+        )
+
+    @property
+    def last_collision(self):
+        """Most recent collision event, or None."""
+        if self._collision_detector is not None:
+            return self._collision_detector.last_event
+        return None
 
     def calibrate_dynamics(self, num_configs: int = 80,
                            settle_time: float = 1.0,

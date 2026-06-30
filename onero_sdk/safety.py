@@ -205,7 +205,11 @@ class SafetyMonitor:
             self._last_target = None
 
     def set_emergency_stop(self) -> None:
-        """Programmatically trigger emergency stop from application code."""
+        """Set the motion-abort flag. Running motions will exit their control loop.
+
+        This only sets an internal flag — it does NOT disable the backend hardware.
+        For a full hardware stop (disable motors + notify), use trigger_emergency_stop().
+        """
         self._emergency_stop = True
 
     def clear_emergency_stop(self) -> None:
@@ -242,6 +246,13 @@ class SafetyMonitor:
                 )
             return True
         return False
+
+    def trigger_emergency_stop(self, joint_index: int, reason: str) -> None:
+        """Trigger emergency stop — disables arm and notifies user.
+
+        Public API for use by subsystems (e.g. collision detection).
+        """
+        self._trigger_emergency_stop(joint_index, reason)
 
     def _trigger_emergency_stop(self, joint_index: int, reason: str) -> None:
         """Trigger emergency stop — disables arm and notifies user."""

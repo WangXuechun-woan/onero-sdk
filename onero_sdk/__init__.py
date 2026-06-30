@@ -20,6 +20,7 @@ from .exceptions import (
     OneroConfigError, OneroTimeoutError, OneroSafetyError,
 )
 from .safety import SafetyConfig
+from .collision import CollisionConfig, CollisionEvent, CollisionDetector, CollisionResponse
 
 # Low-level API (hardware access)
 from .can_bus import CanBus, CanFrame
@@ -111,6 +112,7 @@ __all__ = [
     "OneroError", "OneroConnectionError", "OneroHardwareError", "OneroConfigError",
     "OneroTimeoutError", "OneroSafetyError",
     "SafetyConfig",
+    "CollisionConfig", "CollisionEvent", "CollisionDetector", "CollisionResponse",
     # Low-level
     "CanBus", "CanFrame", "Motor",
     "MotorLimits", "MotorState", "MotorError", "RegisterID",

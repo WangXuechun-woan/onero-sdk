@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pytest
 
-from tests.precision_standards import (
+from precision_standards import (
     POS_REPEATABILITY_TIGHT, POS_REPEATABILITY_NORMAL, POS_REPEATABILITY_LOOSE,
     POS_ACCURACY_NORMAL, POS_ACCURACY_LOOSE,
     PATH_ACCURACY_NORMAL,
