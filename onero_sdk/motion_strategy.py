@@ -6,12 +6,40 @@ yielding MotionFrame or VelocityFrame objects for the MotionExecutor.
 """
 
 import math
+import logging
 from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
 
 from .motion_executor import MotionFrame, VelocityFrame
+from .exceptions import OneroSafetyError
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SingularityPolicy:
+    """
+    Two-threshold singularity handling for Cartesian motion.
+
+    Behavior mirrors MoveIt's servo:
+      sigma_min > warn_threshold      → full speed
+      hard_threshold < sigma_min ≤ warn → scale twist by (sigma_min - hard)
+                                          / (warn - hard); log warning once
+      sigma_min ≤ hard_threshold      → abort motion (OneroSafetyError)
+
+    Set abort_on_hard=False to keep clamping to zero velocity instead of
+    aborting (safer for teleop, worse for path-following programs).
+
+    classify_fn: optional callable(q) → (type_str, severity) that upgrades
+    the warning/error messages with the singularity type ("wrist", "elbow",
+    "shoulder"). Typically arm._get_dynamics().classify_singularity.
+    """
+    warn_threshold: float = 0.03
+    hard_threshold: float = 0.005
+    abort_on_hard: bool = True
+    classify_fn: Optional[Callable] = None
 
 
 @dataclass
@@ -154,19 +182,65 @@ def velocity_joint_frames(target_vel: list, ramp_steps: int, hold_steps: int, dt
 
 def velocity_cartesian_frames(twist, ramp_steps: int, hold_steps: int, dt: float,
                               get_joints_fn, jacobian_solve_fn,
-                              twist_fn=None):
-    """twist_fn: if provided, called each tick to get current base-frame twist (for dynamic frames)."""
+                              twist_fn=None,
+                              singularity_policy: Optional[SingularityPolicy] = None):
+    """
+    twist_fn: if provided, called each tick to get current base-frame twist.
+
+    singularity_policy: if provided, jacobian_solve_fn must accept
+        return_sigma_min=True and return (dq, sigma_min). Policy scales the
+        commanded twist as sigma_min drops between warn/hard thresholds and
+        aborts (OneroSafetyError) below hard threshold.
+    """
+    warned = [False]
+
+    def _describe(q):
+        if singularity_policy is None or singularity_policy.classify_fn is None:
+            return ""
+        try:
+            stype, sev = singularity_policy.classify_fn(q)
+        except Exception:
+            return ""
+        if stype == "none":
+            return ""
+        return f" (type={stype}, severity={sev:.2f})"
+
+    def _solve(q, tw):
+        if singularity_policy is None:
+            return jacobian_solve_fn(q, tw)
+        dq, sigma_min = jacobian_solve_fn(q, tw, return_sigma_min=True)
+        p = singularity_policy
+        if sigma_min <= p.hard_threshold:
+            msg = (f"Cartesian motion aborted: sigma_min={sigma_min:.4f} "
+                   f"≤ hard_threshold={p.hard_threshold}. Arm is at a "
+                   f"singularity{_describe(q)}.")
+            if p.abort_on_hard:
+                raise OneroSafetyError(reason=msg)
+            logger.error(msg + " Clamping velocity to zero.")
+            return np.zeros_like(dq)
+        if sigma_min < p.warn_threshold:
+            if not warned[0]:
+                logger.warning(
+                    f"Approaching singularity: sigma_min={sigma_min:.4f} "
+                    f"< warn={p.warn_threshold}{_describe(q)}. Cartesian "
+                    f"velocity will be scaled down.")
+                warned[0] = True
+            span = p.warn_threshold - p.hard_threshold
+            scale = max(0.0, (sigma_min - p.hard_threshold) / span)
+            return dq * scale
+        return dq
+
     for step in range(ramp_steps):
         alpha = (step + 1) / max(ramp_steps, 1)
         current_twist = twist_fn() if twist_fn else twist
-        joint_vel = jacobian_solve_fn(get_joints_fn(), alpha * current_twist)
+        joint_vel = _solve(get_joints_fn(), alpha * current_twist)
         yield VelocityFrame(velocities=joint_vel.tolist(), dt=dt)
     for step in range(hold_steps):
         current_twist = twist_fn() if twist_fn else twist
-        joint_vel = jacobian_solve_fn(get_joints_fn(), current_twist)
+        joint_vel = _solve(get_joints_fn(), current_twist)
         yield VelocityFrame(velocities=joint_vel.tolist(), dt=dt)
     for step in range(ramp_steps):
         alpha = 1.0 - (step + 1) / max(ramp_steps, 1)
         current_twist = twist_fn() if twist_fn else twist
-        joint_vel = jacobian_solve_fn(get_joints_fn(), alpha * current_twist)
+        joint_vel = _solve(get_joints_fn(), alpha * current_twist)
         yield VelocityFrame(velocities=joint_vel.tolist(), dt=dt)

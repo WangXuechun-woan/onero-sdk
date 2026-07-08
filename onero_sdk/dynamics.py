@@ -8,6 +8,7 @@ collision detection, and external wrench estimation.
 Install: pip install onero-sdk[dynamics]
 """
 
+import math
 import numpy as np
 import threading
 
@@ -246,6 +247,73 @@ class DynamicsModel:
             )
         return J
 
+    def manipulability(self, joint_positions: list[float]) -> tuple[float, float]:
+        """
+        Compute Yoshikawa manipulability index and minimum singular value.
+
+        w = sqrt(det(J J^T)) — near zero means loss of a Cartesian DOF.
+        sigma_min = smallest singular value of J — the numerically robust proxy
+        used by DLS damping.
+
+        Returns:
+            (w, sigma_min). Both are always finite (non-negative).
+        """
+        J = self.jacobian(joint_positions)
+        sigma = np.linalg.svd(J, compute_uv=False)
+        w = float(np.prod(sigma))
+        return w, float(sigma[-1])
+
+    def classify_singularity(self, joint_positions: list[float],
+                             wrist_joint_index: int = 5,
+                             elbow_joint_index: int = 3,
+                             angle_threshold: float = 0.15,
+                             shoulder_radial_threshold: float = 0.05,
+                             ) -> tuple[str, float]:
+        """
+        UR-style singularity type classification for a 7-DOF anthropomorphic arm.
+
+        Detects three canonical singularities:
+          - "wrist":    J_wrist near 0 or ±π (J4 and J6 axes become collinear,
+                        lose one orientation DOF)
+          - "elbow":    J_elbow near 0 or ±π (arm fully extended/folded,
+                        lose radial position DOF at reach boundary)
+          - "shoulder": EE lies on the base rotation axis (J0), so J0 has no
+                        effect on EE position
+
+        Returns:
+            (type, severity) where type is "wrist"|"elbow"|"shoulder"|"none"
+            and severity is in [0, 1] (1 = exactly at singularity).
+            The most severe of the three is reported.
+        """
+        q = np.asarray(joint_positions, dtype=float)
+
+        # Wrist: sin(J_wrist) is 0 at singular positions (0 or ±π).
+        j_wrist = q[wrist_joint_index]
+        wrist_sev = 1.0 - min(1.0, abs(math.sin(j_wrist)) / math.sin(angle_threshold))
+
+        # Elbow: same criterion on elbow joint.
+        j_elbow = q[elbow_joint_index]
+        elbow_sev = 1.0 - min(1.0, abs(math.sin(j_elbow)) / math.sin(angle_threshold))
+
+        # Shoulder: radial distance of EE from J0 axis (base +Z) in base frame.
+        # For arms with different J0 axes, this uses the model's actual EE
+        # position in the base frame — J0 axis is assumed to pass through the
+        # base origin along +Z (the URDF convention for this arm).
+        p_ee = self.ee_position(joint_positions)
+        radial = math.hypot(float(p_ee[0]), float(p_ee[1]))
+        shoulder_sev = 1.0 - min(1.0, radial / shoulder_radial_threshold)
+
+        candidates = [
+            ("wrist", wrist_sev),
+            ("elbow", elbow_sev),
+            ("shoulder", shoulder_sev),
+        ]
+        candidates.sort(key=lambda x: -x[1])
+        top_type, top_sev = candidates[0]
+        if top_sev <= 0.0:
+            return "none", 0.0
+        return top_type, top_sev
+
     def ee_position(self, joint_positions: list[float]) -> np.ndarray:
         """End-effector position (3D) in base frame via FK."""
         q = np.asarray(joint_positions, dtype=float)
@@ -269,7 +337,8 @@ class DynamicsModel:
 
     def jacobian_solve(self, joint_positions: list[float], twist: np.ndarray,
                        lambda_max: float = 0.1,
-                       sigma_threshold: float = 0.02) -> np.ndarray:
+                       sigma_threshold: float = 0.02,
+                       return_sigma_min: bool = False):
         """
         DLS solve: dq = J^+ @ twist with adaptive singularity damping.
 
@@ -284,12 +353,15 @@ class DynamicsModel:
             twist: Target EE velocity [vx, vy, vz, wx, wy, wz].
             lambda_max: Maximum damping coefficient.
             sigma_threshold: Singular values below this trigger damping.
+            return_sigma_min: If True, return (dq, sigma_min) tuple so callers
+                can implement two-level threshold policies (warn/slow/abort).
 
         Returns:
             Joint velocities (n,) — always finite even at singularities.
+            If return_sigma_min: (joint_velocities, sigma_min) tuple.
         """
         J = self.jacobian(joint_positions)
-        sigma_min = np.linalg.svd(J, compute_uv=False)[-1]
+        sigma_min = float(np.linalg.svd(J, compute_uv=False)[-1])
         if sigma_min < sigma_threshold:
             ratio = sigma_min / sigma_threshold
             lambda_sq = lambda_max ** 2 * (1.0 - ratio * ratio)
@@ -297,6 +369,8 @@ class DynamicsModel:
             lambda_sq = 0.0
         JJT = J @ J.T
         dq = J.T @ np.linalg.solve(JJT + lambda_sq * np.eye(6), twist)
+        if return_sigma_min:
+            return dq, sigma_min
         return dq
 
     def inverse_dynamics(self, joint_positions: list[float],

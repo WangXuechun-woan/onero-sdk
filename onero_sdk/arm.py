@@ -27,7 +27,7 @@ from .motion_executor import MotionExecutor, MotionFrame, VelocityFrame
 from .motion_strategy import (
     MotionContext, cosine_joint_frames, trapezoidal_joint_frames,
     scurve_joint_frames, cartesian_linear_frames, circular_arc_frames,
-    velocity_joint_frames, velocity_cartesian_frames,
+    velocity_joint_frames, velocity_cartesian_frames, SingularityPolicy,
 )
 from .compliance import ComplianceController
 from .safe_backend import SafeBackend
@@ -184,6 +184,12 @@ class Arm(ArmTransformsMixin):
             reflected_inertia=self._reflected_inertia,
             cache_interval=10,
         )
+
+        # Cartesian singularity handling — disabled by default (opt-in via
+        # arm.set_singularity_policy(...)) so existing behavior (silent DLS
+        # damping) is preserved. Once enabled, speedl and Cartesian teleop
+        # paths will warn + slow near singularity and abort at the hard limit.
+        self._singularity_policy = None
 
         # Safety: auto-disable on interpreter exit if user forgets
         self._atexit_registered = True
@@ -896,7 +902,8 @@ class Arm(ArmTransformsMixin):
             self._state = self._executor.run(
                 velocity_cartesian_frames(twist_base, ramp_steps, hold_steps, dt,
                                           _get_joints, dynamics.jacobian_solve,
-                                          twist_fn=twist_fn)
+                                          twist_fn=twist_fn,
+                                          singularity_policy=self._singularity_policy)
             )
 
             # Gradual transition to position hold
@@ -2177,6 +2184,78 @@ class Arm(ArmTransformsMixin):
         if q is None:
             q = self._state.joints
         return dynamics.jacobian(q)
+
+    def manipulability(self, q: list[float] | None = None) -> tuple[float, float]:
+        """
+        Yoshikawa manipulability index and minimum singular value of the Jacobian.
+
+        w = sqrt(det(J J^T)) — 0 at a singular configuration. For this 7-DOF arm,
+        healthy configurations sit around w ≈ 0.05–0.2 (units: m^3·rad^3);
+        w < ~0.01 signals imminent singularity.
+
+        sigma_min is the numerically robust proxy used by DLS damping; both
+        our servol/movel and jacobian_solve start damping around sigma_min < 0.02.
+
+        Args:
+            q: Joint positions (rad). Defaults to current state.
+
+        Returns:
+            (w, sigma_min). Use sigma_min for gating; w for human-facing telemetry.
+        """
+        dynamics = self._get_dynamics()
+        if q is None:
+            q = self._state.joints
+        return dynamics.manipulability(q)
+
+    def set_singularity_policy(self, warn_threshold: float = 0.03,
+                               hard_threshold: float = 0.005,
+                               abort_on_hard: bool = True) -> None:
+        """
+        Configure Cartesian-velocity singularity handling for speedl and
+        Cartesian teleop paths.
+
+        Above `warn_threshold` sigma_min → full commanded speed.
+        Between the two thresholds → linearly scale twist to zero, logging
+        a warning once per motion.
+        Below `hard_threshold` → raise OneroSafetyError if abort_on_hard=True,
+        otherwise clamp velocity to zero.
+
+        Defaults track MoveIt servo (warn=0.03, hard=0.005). Set warn=0 to
+        disable the whole check (falls back to plain DLS damping only).
+        """
+        if warn_threshold < hard_threshold:
+            raise OneroConfigError(
+                f"warn_threshold ({warn_threshold}) must be >= "
+                f"hard_threshold ({hard_threshold})")
+        if warn_threshold <= 0:
+            self._singularity_policy = None
+        else:
+            self._singularity_policy = SingularityPolicy(
+                warn_threshold=warn_threshold,
+                hard_threshold=hard_threshold,
+                abort_on_hard=abort_on_hard,
+                classify_fn=self._get_dynamics().classify_singularity,
+            )
+
+    def singularity_info(self, q: list[float] | None = None) -> dict:
+        """
+        Full singularity telemetry at the given configuration.
+
+        Returns a dict with:
+          - "w":           Yoshikawa manipulability index
+          - "sigma_min":   Smallest singular value of the Jacobian
+          - "type":        "wrist" | "elbow" | "shoulder" | "none"
+          - "severity":    [0, 1], 1 = exactly at that singularity
+
+        Callers can build UI (VR haptic cues, teach-pendant warnings) around
+        this without duplicating the classification logic.
+        """
+        dynamics = self._get_dynamics()
+        if q is None:
+            q = self._state.joints
+        w, sigma_min = dynamics.manipulability(q)
+        stype, sev = dynamics.classify_singularity(q)
+        return {"w": w, "sigma_min": sigma_min, "type": stype, "severity": sev}
 
     def gravity_torque(self, q: list[float] | None = None) -> list[float]:
         """

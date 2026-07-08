@@ -79,10 +79,14 @@ class IKSolver:
     def solve_ik(self, target_pos: np.ndarray, target_rot: np.ndarray = None,
                  q_init: np.ndarray = None, max_iter: int = 200,
                  dt: float = 0.1, damp: float = 1e-6,
+                 lambda_max: float = 0.1, sigma_threshold: float = 0.02,
                  pos_tol: float = 1e-3, rot_tol: float = 1e-2) -> np.ndarray:
         """
-        Damped least squares IK solver with joint limit clamping.
-        7-DOF arm allows null-space optimization.
+        Damped least squares IK with adaptive singularity damping.
+
+        Ramps damping from `damp` (well-conditioned) up to `lambda_max`
+        (fully singular) as sigma_min drops below `sigma_threshold`. Matches
+        the strategy used by DynamicsModel.jacobian_solve.
         """
         if q_init is not None:
             q = np.array(q_init, dtype=float)
@@ -119,7 +123,13 @@ class IKSolver:
                 J = J[:3, :]
                 err = err[:3]
 
-            JtJ = J.T @ J + damp * np.eye(self._nq)
+            sigma_min = np.linalg.svd(J, compute_uv=False)[-1]
+            if sigma_min < sigma_threshold:
+                ratio = sigma_min / sigma_threshold
+                lambda_sq = damp + lambda_max ** 2 * (1.0 - ratio * ratio)
+            else:
+                lambda_sq = damp
+            JtJ = J.T @ J + lambda_sq * np.eye(self._nq)
             dq = np.linalg.solve(JtJ, J.T @ err)
             q = q + dt * dq
             q = np.clip(q, self._q_min, self._q_max)
@@ -142,6 +152,9 @@ class IKSolver:
         """
         IK with null-space posture optimization (7-DOF redundancy).
         q_ref is the preferred joint configuration.
+
+        Same adaptive DLS damping as solve_ik — tune via `lambda_max` and
+        `sigma_threshold` kwargs.
         """
         if q_init is not None:
             q = np.array(q_init, dtype=float)
@@ -154,6 +167,8 @@ class IKSolver:
         max_iter = kwargs.get('max_iter', 200)
         dt = kwargs.get('dt', 0.1)
         damp = kwargs.get('damp', 1e-6)
+        lambda_max = kwargs.get('lambda_max', 0.1)
+        sigma_threshold = kwargs.get('sigma_threshold', 0.02)
         pos_tol = kwargs.get('pos_tol', 1e-3)
         rot_tol = kwargs.get('rot_tol', 1e-2)
 
@@ -186,7 +201,13 @@ class IKSolver:
                 J = J[:3, :]
                 err = err[:3]
 
-            JtJ = J.T @ J + damp * np.eye(self._nq)
+            sigma_min = np.linalg.svd(J, compute_uv=False)[-1]
+            if sigma_min < sigma_threshold:
+                ratio = sigma_min / sigma_threshold
+                lambda_sq = damp + lambda_max ** 2 * (1.0 - ratio * ratio)
+            else:
+                lambda_sq = damp
+            JtJ = J.T @ J + lambda_sq * np.eye(self._nq)
             J_pinv = np.linalg.solve(JtJ, J.T)
             dq_task = J_pinv @ err
 
