@@ -37,6 +37,7 @@ from .safe_backend import SafeBackend
 from .gain_policy import GainPolicy, Stiffness
 from .mounting import MountingPreset, MountingConfig
 from .protocols import ArmProtocol
+from .realtime import apply_realtime, release_realtime, RealtimeStatus
 
 # Optional: IK (requires pip install onero-sdk[ik])
 try:
@@ -123,6 +124,7 @@ __all__ = [
     "SafeBackend", "GainPolicy", "Stiffness",
     "MountingPreset", "MountingConfig",
     "ArmProtocol",
+    "apply_realtime", "release_realtime", "RealtimeStatus",
     "URDFChain",
     # Optional
     "IKSolver", "PinkIKSolver", "DynamicsModel",

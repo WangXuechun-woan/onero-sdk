@@ -9,6 +9,7 @@ import socket
 import struct
 import select
 import time
+import errno
 from dataclasses import dataclass
 from typing import Optional
 
@@ -23,7 +24,20 @@ CAN_SFF_MASK = 0x7FF
 CAN_EFF_MASK = 0x1FFFFFFF
 
 CAN_FRAME_FMT = '=IB3x8s'
-CAN_FRAME_SIZE = struct.calcsize(CAN_FRAME_FMT)
+_FRAME_STRUCT = struct.Struct(CAN_FRAME_FMT)
+CAN_FRAME_SIZE = _FRAME_STRUCT.size
+
+# Tight recv poll interval when the socket has no data ready. Empirically
+# 10 µs balances CPU load against latency: shorter values busy-spin without
+# measurable gain; longer values add p99/max jitter.
+_RECV_POLL_INTERVAL = 1e-5
+
+# Send-side backoff when the CAN qdisc queue is full (ENOBUFS). Typical
+# `pfifo_fast qlen 10` fills when a high-priority thread bursts frames faster
+# than the driver drains at 1 Mbps (~130 µs / frame). Small sleep gives the
+# driver time to advance the queue.
+_SEND_BACKOFF_S = 100e-6
+_SEND_MAX_RETRIES = 3
 
 
 @dataclass
@@ -73,6 +87,11 @@ class CanBus:
                 f"Run 'python -m onero_sdk.diag {channel}' for diagnostics."
             ) from e
 
+        # Drain any pre-existing frames on the interface. Without this, an
+        # earlier session's stale motor responses can survive into the new
+        # socket's kernel rx queue and confuse the first recv_batch.
+        self.flush_rx()
+
     @property
     def channel(self) -> str:
         return self._channel
@@ -80,15 +99,28 @@ class CanBus:
     def send(self, can_id: int, data: bytes) -> None:
         dlc = len(data)
         data_padded = data.ljust(8, b'\x00')
-        frame = struct.pack(CAN_FRAME_FMT, can_id, dlc, data_padded)
-        self._sock.send(frame)
+        frame = _FRAME_STRUCT.pack(can_id, dlc, data_padded)
+        sock = self._sock
+        for attempt in range(_SEND_MAX_RETRIES):
+            try:
+                sock.send(frame)
+                return
+            except OSError as e:
+                # ENOBUFS: qdisc tx queue full (default pfifo_fast qlen=10).
+                # A brief backoff lets the driver drain a slot. Rare in
+                # normal operation; observed under SCHED_FIFO when Python
+                # bursts sends faster than the 1 Mbps wire.
+                if e.errno == errno.ENOBUFS and attempt + 1 < _SEND_MAX_RETRIES:
+                    time.sleep(_SEND_BACKOFF_S)
+                    continue
+                raise
 
     def recv(self, timeout: float = 0.01) -> Optional[CanFrame]:
         ready = select.select([self._sock], [], [], timeout)
         if not ready[0]:
             return None
         raw = self._sock.recv(CAN_FRAME_SIZE)
-        can_id, dlc, data = struct.unpack(CAN_FRAME_FMT, raw)
+        can_id, dlc, data = _FRAME_STRUCT.unpack(raw)
         return CanFrame(can_id=can_id, data=data[:dlc], dlc=dlc)
 
     def recv_until(self, target_id: int, timeout: float = 0.05) -> Optional[CanFrame]:
@@ -110,34 +142,39 @@ class CanBus:
         Reads frames from the bus until all target IDs are received or timeout.
         Ignores frames with unexpected IDs (stale frames from previous cycles).
 
-        Args:
-            target_ids: Set of expected response CAN IDs.
-            timeout: Maximum time to wait for all responses.
-
-        Returns:
-            Dict mapping received CAN ID → frame. Missing IDs are absent.
+        Uses a tight non-blocking recv loop rather than select() per frame —
+        avoids one syscall per frame in the hot path. Benchmarked (bench_can.py):
+        p99 −3.4% single-arm idle, −7.5% dual-arm parallel vs the previous
+        select-per-frame implementation. See docs/bench_can_report.md.
         """
-        deadline = time.monotonic() + timeout
+        sock = self._sock
+        deadline = time.perf_counter() + timeout
         collected: dict[int, CanFrame] = {}
         remaining_ids = set(target_ids)
+        unpack = _FRAME_STRUCT.unpack
 
-        while remaining_ids:
-            remaining_time = deadline - time.monotonic()
-            if remaining_time <= 0:
-                break
-            frame = self.recv(timeout=remaining_time)
-            if frame is None:
-                break
-            arb_id = frame.arbitration_id
+        while remaining_ids and time.perf_counter() < deadline:
+            try:
+                raw = sock.recv(CAN_FRAME_SIZE, socket.MSG_DONTWAIT)
+            except BlockingIOError:
+                time.sleep(_RECV_POLL_INTERVAL)
+                continue
+            can_id, dlc, data = unpack(raw)
+            arb_id = (can_id & CAN_EFF_MASK) if (can_id & CAN_EFF_FLAG) else (can_id & CAN_SFF_MASK)
             if arb_id in remaining_ids:
-                collected[arb_id] = frame
+                collected[arb_id] = CanFrame(can_id=can_id, data=data[:dlc], dlc=dlc)
                 remaining_ids.discard(arb_id)
 
         return collected
 
     def flush_rx(self) -> None:
-        while self.recv(timeout=0.001) is not None:
-            pass
+        """Drain any pending frames on the rx queue non-blockingly."""
+        sock = self._sock
+        while True:
+            try:
+                sock.recv(CAN_FRAME_SIZE, socket.MSG_DONTWAIT)
+            except BlockingIOError:
+                return
 
     def close(self) -> None:
         if self._closed:
@@ -150,3 +187,4 @@ class CanBus:
 
     def __exit__(self, *args):
         self.close()
+

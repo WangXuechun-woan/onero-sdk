@@ -59,7 +59,8 @@ class Arm(ArmTransformsMixin):
                  on_error: Optional[Callable] = None,
                  mounting=None,
                  world_frame: bool = False,
-                 base_position: Optional[list] = None):
+                 base_position: Optional[list] = None,
+                 realtime: bool = False):
         """
         Args:
             model: Arm model name (e.g. "A1R", "A1L"). Looked up in model registry.
@@ -78,10 +79,20 @@ class Arm(ArmTransformsMixin):
             base_position: [x, y, z] position of the arm base origin in world
                            coordinates (meters). Required for multi-arm setups
                            sharing a world frame. Defaults to [0, 0, 0].
+            realtime: If True and using a CAN backend, elevate the calling thread
+                      to SCHED_FIFO + mlockall on enable() to cut CAN cycle jitter
+                      (max −44% in benchmarks). Requires
+                      `setcap cap_sys_nice,cap_ipc_lock+ep $(readlink -f $(which python3))`
+                      once per Python binary; silently degrades if caps are missing.
+                      Only elevates the thread that calls enable() — see
+                      `onero_sdk.realtime.apply_realtime` if running the control
+                      loop in a separate thread.
         """
         self._model_info = get_model(model)
         self._on_error = on_error
         self._enabled = False
+        self._realtime_requested = realtime
+        self._realtime_status = None
 
         # Mounting, world-frame, and TCP transforms
         self._init_transforms(mounting, world_frame, base_position)
@@ -285,8 +296,28 @@ class Arm(ArmTransformsMixin):
         self._safety.reset(state.joints)
         if self._end_effector is not None:
             self._end_effector.enable()
+        if self._realtime_requested:
+            self._apply_realtime()
         logger.info(f"Arm enabled. Initial joints: {state.joints}")
         return state
+
+    def _apply_realtime(self) -> None:
+        """Try to elevate the calling thread's realtime priority.
+
+        Only elevates when running against a real CAN backend — sim backends
+        don't benefit and SCHED_FIFO could starve their render/physics threads.
+        """
+        from .can_backend import CanBackend
+        if not isinstance(self._backend, CanBackend):
+            logger.info("realtime=True ignored: backend is not CanBackend")
+            return
+        from .realtime import apply_realtime
+        status = apply_realtime()
+        self._realtime_status = status
+        if status.applied:
+            logger.info(f"Realtime priority active: {status.summary()}")
+        else:
+            logger.warning(f"Realtime priority NOT applied: {status.summary()}")
 
     def disable(self) -> None:
         """Disable all joints."""
@@ -294,6 +325,10 @@ class Arm(ArmTransformsMixin):
             self._end_effector.disable()
         self._backend.disable()
         self._enabled = False
+        if self._realtime_status is not None and self._realtime_status.applied:
+            from .realtime import release_realtime
+            release_realtime()
+            self._realtime_status = None
         logger.info("Arm disabled")
 
     def close(self) -> None:
