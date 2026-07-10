@@ -71,7 +71,7 @@ class SafeBackend(ArmBackend):
             velocities=cmd_vel,
             kps=kps, kds=kds, torques=clamped_tau,
         )
-        self._safety.reconcile_position(state.joints)
+        self._safety.check_tracking_error(state.joints, clamped_pos)
         return state
 
     def command_hold(self, positions: list[float], velocities: list[float],

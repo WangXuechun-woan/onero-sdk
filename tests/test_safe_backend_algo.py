@@ -218,6 +218,284 @@ class TestRateLimiting:
             )
 
 
+class LaggyMockBackend(ArmBackend):
+    """Mock backend that simulates a lagging servo.
+
+    Applies only `follow_ratio` of the commanded delta each cycle, so measured
+    trails commanded. Use to exercise tracking-error semantics.
+    """
+
+    def __init__(self, num_joints=7, follow_ratio=0.5, fixed_measured=None):
+        self._num_joints = num_joints
+        self._follow_ratio = follow_ratio
+        self._fixed_measured = fixed_measured
+        self._state = ArmState(
+            joints=[0.0] * num_joints,
+            velocities=[0.0] * num_joints,
+            torques=[0.0] * num_joints,
+            timestamp=0.0,
+        )
+
+    @property
+    def num_joints(self) -> int:
+        return self._num_joints
+
+    def enable(self) -> ArmState:
+        return self._state
+
+    def disable(self) -> None:
+        pass
+
+    def command(self, positions, velocities, kps, kds, torques) -> ArmState:
+        if self._fixed_measured is not None:
+            new_joints = list(self._fixed_measured)
+        else:
+            new_joints = [
+                self._state.joints[i]
+                + self._follow_ratio * (positions[i] - self._state.joints[i])
+                for i in range(self._num_joints)
+            ]
+        self._state = ArmState(
+            joints=new_joints,
+            velocities=list(velocities),
+            torques=list(torques),
+            timestamp=self._state.timestamp + 0.005,
+        )
+        return self._state
+
+    def command_velocity(self, velocities) -> ArmState:
+        return self._state
+
+    def command_torque(self, torques) -> ArmState:
+        return self._state
+
+    def get_state(self) -> ArmState:
+        return self._state
+
+    def close(self) -> None:
+        pass
+
+
+class TestNoAutoReconcile:
+    """SafeBackend.command must NOT reconcile the rate-limiter baseline every
+    frame. Baseline is reference-to-reference; measured is only checked via
+    check_tracking_error. This is the fix for the movej home drift bug where
+    per-frame reconcile turned rate-limit into positive feedback with servo lag.
+    """
+
+    def test_baseline_stays_reference_to_reference_under_lag(self):
+        """Commanded targets accumulate against last commanded, not measured."""
+        max_delta = 0.03
+        inner = LaggyMockBackend(follow_ratio=0.3)  # measured lags heavily
+        joint_limits = [(-3.14, 3.14)] * 7
+        config = SafetyConfig(
+            max_delta_per_step=max_delta,
+            max_velocity=5.0,
+            control_freq=200.0,
+            # Disable watchdog so this test only exercises the baseline
+            tracking_error_hard_threshold=0.0,
+            tracking_error_soft_threshold=0.0,
+        )
+        safety = SafetyMonitor(
+            num_joints=7, joint_limits=joint_limits, config=config
+        )
+        safety.reset(initial_positions=[0.0] * 7)
+        sb = SafeBackend(inner=inner, safety=safety)
+
+        zeros = [0.0] * 7
+        kps = [100.0] * 7
+        kds = [5.0] * 7
+
+        for _ in range(20):
+            sb.command([10.0] * 7, zeros, kps, kds, zeros)
+
+        # Baseline should have advanced by max_delta per step (reference-to-reference),
+        # NOT been pulled back toward the lagging measured position each frame.
+        expected = 20 * max_delta
+        assert abs(safety._last_target[0] - expected) < 1e-9, (
+            f"baseline advanced only to {safety._last_target[0]:.4f}, "
+            f"expected {expected:.4f} — auto-reconcile is still running"
+        )
+
+    def test_explicit_reconcile_still_works(self):
+        """reconcile_position remains available for event-driven baseline sync."""
+        max_delta = 0.03
+        sb, _, safety = _make_safe_backend(max_delta=max_delta)
+
+        zeros = [0.0] * 7
+        kps = [100.0] * 7
+        kds = [5.0] * 7
+        for _ in range(5):
+            sb.command([1.0] * 7, zeros, kps, kds, zeros)
+        assert safety._last_target[0] > 0.14
+
+        safety.reconcile_position([0.0] * 7)
+        assert abs(safety._last_target[0]) < 1e-9
+
+    def test_reconcile_resets_watchdog_counters(self):
+        """reconcile is an event boundary — it also clears watchdog state."""
+        sb, _, safety = _make_safe_backend()
+        safety._tracking_error_hard_count = 5
+        safety._tracking_error_soft_count = 42
+        safety.reconcile_position([0.0] * 7)
+        assert safety._tracking_error_hard_count == 0
+        assert safety._tracking_error_soft_count == 0
+
+
+class TestTrackingErrorWatchdog:
+    """Two-tier watchdog on |measured - commanded|.
+
+    - Hard tier: >hard_threshold for hard_frames → immediate fault
+    - Soft tier: >soft_threshold for soft_frames → sustained fault
+    """
+
+    def _make_monitor(self, **overrides):
+        joint_limits = [(-3.14, 3.14)] * 7
+        defaults = dict(
+            max_delta_per_step=0.03,
+            max_velocity=5.0,
+            control_freq=200.0,
+            tracking_error_hard_threshold=1.0,
+            tracking_error_hard_frames=10,
+            tracking_error_soft_threshold=0.5,
+            tracking_error_soft_frames=100,
+        )
+        defaults.update(overrides)
+        config = SafetyConfig(**defaults)
+        monitor = SafetyMonitor(
+            num_joints=7, joint_limits=joint_limits, config=config
+        )
+        monitor.reset(initial_positions=[0.0] * 7)
+        return monitor
+
+    def test_normal_lag_below_soft_never_fires(self):
+        """Lag < soft_threshold: no counter growth, no fire."""
+        monitor = self._make_monitor()
+        commanded = [0.0] * 7
+        measured = [0.35, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # below 0.5
+        for _ in range(500):
+            monitor.check_tracking_error(measured, commanded)
+        assert not monitor.emergency_stopped
+
+    def test_hard_tier_fires_at_hard_frames(self):
+        """Sample above hard_threshold triggers within hard_frames frames."""
+        monitor = self._make_monitor()
+        commanded = [0.0] * 7
+        measured = [1.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # above hard=1.0
+        for i in range(9):
+            monitor.check_tracking_error(measured, commanded)
+            assert not monitor.emergency_stopped, f"fired early at frame {i}"
+        monitor.check_tracking_error(measured, commanded)  # 10th frame
+        assert monitor.emergency_stopped
+
+    def test_soft_tier_fires_at_soft_frames_not_before(self):
+        """Sustained lag > soft_threshold triggers exactly at soft_frames."""
+        monitor = self._make_monitor()
+        commanded = [0.0] * 7
+        measured = [0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # above soft=0.5, below hard=1.0
+        for i in range(99):
+            monitor.check_tracking_error(measured, commanded)
+            assert not monitor.emergency_stopped, f"fired early at frame {i}"
+        monitor.check_tracking_error(measured, commanded)  # 100th frame
+        assert monitor.emergency_stopped
+
+    def test_transient_spike_resets_soft_counter(self):
+        """Spike above soft, then recovery, must not fire — counter resets."""
+        monitor = self._make_monitor()
+        commanded = [0.0] * 7
+        over_soft = [0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        normal = [0.35, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+        # 80 frames over soft (not yet fired)
+        for _ in range(80):
+            monitor.check_tracking_error(over_soft, commanded)
+        # Recover for 5 frames (resets counter)
+        for _ in range(5):
+            monitor.check_tracking_error(normal, commanded)
+        # Another 80 frames over soft — counter should have restarted
+        for _ in range(80):
+            monitor.check_tracking_error(over_soft, commanded)
+        assert not monitor.emergency_stopped
+
+    def test_transient_spike_resets_hard_counter(self):
+        """Hard-tier counter also resets on recovery."""
+        monitor = self._make_monitor()
+        commanded = [0.0] * 7
+        over_hard = [1.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        normal = [0.0] * 7
+
+        for _ in range(9):
+            monitor.check_tracking_error(over_hard, commanded)
+        # Recover for one frame — counter goes back to zero
+        monitor.check_tracking_error(normal, commanded)
+        assert not monitor.emergency_stopped
+        # Now 9 more above hard is still not enough (10th would fire)
+        for _ in range(9):
+            monitor.check_tracking_error(over_hard, commanded)
+        assert not monitor.emergency_stopped
+        monitor.check_tracking_error(over_hard, commanded)
+        assert monitor.emergency_stopped
+
+    def test_disabled_watchdog_never_fires(self):
+        """Both thresholds set to 0 → check is a no-op."""
+        monitor = self._make_monitor(
+            tracking_error_hard_threshold=0.0,
+            tracking_error_soft_threshold=0.0,
+        )
+        commanded = [0.0] * 7
+        measured = [5.0] * 7  # massive lag
+        for _ in range(1000):
+            monitor.check_tracking_error(measured, commanded)
+        assert not monitor.emergency_stopped
+
+    def test_disabled_safety_skips_check(self):
+        """SafetyConfig.enabled=False bypasses the watchdog entirely."""
+        monitor = self._make_monitor()
+        monitor._config.enabled = False
+        commanded = [0.0] * 7
+        measured = [5.0] * 7
+        for _ in range(1000):
+            monitor.check_tracking_error(measured, commanded)
+        assert not monitor.emergency_stopped
+
+    def test_reset_clears_watchdog_counters(self):
+        """reset() zeros both hard and soft counters."""
+        monitor = self._make_monitor()
+        commanded = [0.0] * 7
+        over_soft = [0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        over_hard = [1.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+        for _ in range(50):
+            monitor.check_tracking_error(over_soft, commanded)
+        for _ in range(5):
+            monitor.check_tracking_error(over_hard, commanded)
+        assert monitor._tracking_error_soft_count > 0
+        assert monitor._tracking_error_hard_count > 0
+
+        monitor.reset(initial_positions=[0.0] * 7)
+        assert monitor._tracking_error_soft_count == 0
+        assert monitor._tracking_error_hard_count == 0
+
+    def test_hard_tier_ignores_soft_only_lag(self):
+        """Between soft and hard thresholds: only soft counter advances."""
+        monitor = self._make_monitor()
+        commanded = [0.0] * 7
+        measured = [0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # > soft, < hard
+        for _ in range(50):
+            monitor.check_tracking_error(measured, commanded)
+        assert monitor._tracking_error_hard_count == 0
+        assert monitor._tracking_error_soft_count == 50
+
+    def test_nan_measured_is_ignored(self):
+        """Non-finite samples don't advance either counter."""
+        monitor = self._make_monitor()
+        commanded = [0.0] * 7
+        measured = [float("nan")] * 7
+        for _ in range(200):
+            monitor.check_tracking_error(measured, commanded)
+        assert not monitor.emergency_stopped
+
+
 class TestCommandHold:
     """command_hold() bypasses rate limiting but keeps torque/joint limits."""
 

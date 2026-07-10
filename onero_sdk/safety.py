@@ -25,6 +25,27 @@ class SafetyConfig:
     timeout_frames: int = 10            # consecutive missed frames before emergency stop
     collision_threshold: float = 0.0    # Nm torque residual threshold (0 = disabled)
     collision_stop: bool = True         # whether collision triggers emergency stop
+    # Servo tracking-error watchdog. Two-tier profile mirroring industrial
+    # controllers (UR / Franka / ABB): a hard threshold that fires fast for
+    # catastrophic deviation (external pull, mechanical jam, encoder failure),
+    # and a soft threshold that must be sustained to fire (rules out normal
+    # lag-peaks during fast motion).
+    #
+    # A1 tuning notes (200 Hz control, MIT-protocol servo):
+    #  - Measured mid-motion lag on movej at v_max=2 rad/s peaks at ~0.3–0.35 rad.
+    #  - Soft threshold 0.5 rad leaves 40–60% headroom over normal lag.
+    #  - Hard threshold 1.0 rad is unreachable by normal motion in 50 ms
+    #    (v_max × 50 ms = 0.1 rad).
+    #  - Soft window 500 ms ≈ human reaction time; long enough to bridge the
+    #    lag peak of a large planned motion, short enough to catch faults
+    #    before further damage.
+    #  - Hard window 50 ms = 10 frames — fast enough to matter.
+    #
+    # Set the corresponding threshold to 0 to disable either tier.
+    tracking_error_hard_threshold: float = 1.0   # rad — immediate fault
+    tracking_error_hard_frames: int = 10         # frames (@200 Hz → 50 ms)
+    tracking_error_soft_threshold: float = 0.5   # rad — sustained fault
+    tracking_error_soft_frames: int = 100        # frames (@200 Hz → 500 ms)
     enabled: bool = True
 
 
@@ -50,6 +71,8 @@ class SafetyMonitor:
 
         self._last_target: Optional[np.ndarray] = None
         self._miss_counts = [0] * num_joints
+        self._tracking_error_hard_count = 0
+        self._tracking_error_soft_count = 0
         self._emergency_stop = False
 
     @property
@@ -127,11 +150,19 @@ class SafetyMonitor:
 
     def reconcile_position(self, measured: list[float]) -> None:
         """
-        Reconcile rate limiter baseline with actual measured position.
+        Force the rate-limiter baseline to match `measured`.
 
-        Call periodically (e.g., each control frame) to prevent the internal
-        baseline from diverging too far from reality when the arm cannot
-        track commanded targets (contact, payload, controller lag).
+        Only call at explicit event boundaries — never every control frame:
+        - after enable()
+        - after clearing emergency stop
+        - when transitioning out of freedrive / passive states
+
+        Continuous per-frame reconcile is a bug: it turns the rate limiter
+        into "target may not lead measured by more than max_delta_per_step",
+        which forms a positive feedback loop with servo lag and can drag the
+        commanded target back toward measured (observed on movej: joint drifts
+        away from home instead of converging). See docs/servo_reconcile_note.
+        Use `check_tracking_error` for continuous fault detection instead.
         """
         if self._last_target is None:
             return
@@ -141,6 +172,75 @@ class SafetyMonitor:
         if np.any(bad_mask):
             measured_arr[bad_mask] = self._last_target[bad_mask]
         self._last_target = measured_arr
+        self._tracking_error_hard_count = 0
+        self._tracking_error_soft_count = 0
+
+    def check_tracking_error(self, measured: list[float],
+                             commanded: list[float]) -> None:
+        """
+        Two-tier watchdog on |measured - commanded|.
+
+        - Hard tier: fires within `tracking_error_hard_frames` frames of any
+          sample exceeding `tracking_error_hard_threshold`. For catastrophic
+          deviation (external pull, jam, encoder failure).
+        - Soft tier: must exceed `tracking_error_soft_threshold` for
+          `tracking_error_soft_frames` consecutive frames. Rules out normal
+          mid-motion lag peaks.
+
+        Does not mutate the rate-limiter baseline — commanded target remains
+        authoritative. Servo lag within the soft threshold is normal and
+        ignored; large or sustained deviation signals a fault, not a case
+        for silent clamping.
+        """
+        if not self._config.enabled:
+            return
+
+        measured_arr = np.asarray(measured, dtype=float)
+        commanded_arr = np.asarray(commanded, dtype=float)
+        if measured_arr.shape != commanded_arr.shape:
+            return
+        finite = np.isfinite(measured_arr) & np.isfinite(commanded_arr)
+        if not np.any(finite):
+            return
+
+        diff = np.abs(measured_arr - commanded_arr)
+        diff[~finite] = 0.0
+        max_err = float(np.max(diff))
+
+        hard_th = self._config.tracking_error_hard_threshold
+        if hard_th > 0:
+            if max_err > hard_th:
+                self._tracking_error_hard_count += 1
+                if self._tracking_error_hard_count >= self._config.tracking_error_hard_frames:
+                    joint_idx = int(np.argmax(diff))
+                    self._trigger_emergency_stop(
+                        joint_idx,
+                        f"Tracking error HARD watchdog: |measured - commanded| = "
+                        f"{max_err:.3f} rad on joint {joint_idx} for "
+                        f"{self._tracking_error_hard_count} consecutive frames "
+                        f"(threshold {hard_th} rad, "
+                        f"{self._config.tracking_error_hard_frames} frames)"
+                    )
+                    return
+            else:
+                self._tracking_error_hard_count = 0
+
+        soft_th = self._config.tracking_error_soft_threshold
+        if soft_th > 0:
+            if max_err > soft_th:
+                self._tracking_error_soft_count += 1
+                if self._tracking_error_soft_count >= self._config.tracking_error_soft_frames:
+                    joint_idx = int(np.argmax(diff))
+                    self._trigger_emergency_stop(
+                        joint_idx,
+                        f"Tracking error SOFT watchdog: |measured - commanded| = "
+                        f"{max_err:.3f} rad on joint {joint_idx} for "
+                        f"{self._tracking_error_soft_count} consecutive frames "
+                        f"(threshold {soft_th} rad, "
+                        f"{self._config.tracking_error_soft_frames} frames)"
+                    )
+            else:
+                self._tracking_error_soft_count = 0
 
     def clamp_velocity(self, velocities: list[float]) -> list[float]:
         """Clamp joint velocities to max_velocity. Returns clamped velocities."""
@@ -199,6 +299,8 @@ class SafetyMonitor:
         """Reset safety monitor state (e.g., after re-enable)."""
         self._emergency_stop = False
         self._miss_counts = [0] * self._num_joints
+        self._tracking_error_hard_count = 0
+        self._tracking_error_soft_count = 0
         if initial_positions is not None:
             self._last_target = np.array(initial_positions, dtype=float)
         else:

@@ -489,10 +489,25 @@ class Arm(ArmTransformsMixin):
             self._state = self._executor.run(_frames())
 
             if not self._safety.emergency_stopped:
-                max_err = max(abs(self._state.joints[i] - joints[i]) for i in range(n))
+                errors = [self._state.joints[i] - joints[i] for i in range(n)]
+                max_err = max(abs(e) for e in errors)
                 if max_err > 0.01:
-                    logger.warning(
-                        f"movej: target clamped by safety limits (max error: {max_err:.3f} rad)")
+                    worst = max(range(n), key=lambda i: abs(errors[i]))
+                    # Classify: (a) target already outside joint limits (position
+                    # clip in SafeBackend), or (b) servo tracking error (motor
+                    # never reached the commanded value within the motion window).
+                    p_min, p_max = self._safety._joint_limits[worst]
+                    if joints[worst] < p_min - 1e-6 or joints[worst] > p_max + 1e-6:
+                        logger.warning(
+                            f"movej: joint {worst} target {joints[worst]:.3f} "
+                            f"outside limits [{p_min:.3f}, {p_max:.3f}], "
+                            f"clamped to limit (residual {errors[worst]:+.3f} rad)")
+                    else:
+                        logger.warning(
+                            f"movej: joint {worst} did not reach target within "
+                            f"motion window (residual {errors[worst]:+.3f} rad, "
+                            f"max across joints {max_err:.3f} rad). "
+                            f"Servo tracking lag — extend duration or lower payload/speed.")
 
             return self._state
         finally:
@@ -2086,6 +2101,15 @@ class Arm(ArmTransformsMixin):
         self._clock.reset()
         self._force_mode_origin = None
         self._gain_policy.reset_cache()
+        # Anchor the rate-limiter baseline to the current measured position
+        # before executing a planned motion. Without this, if the arm was
+        # moved (freedrive, external push) since the last active command,
+        # the baseline would still hold the last commanded target — the
+        # first frame would then request a large step and rate-clip could
+        # produce a jump. Called here (not per-frame) to keep rate limiting
+        # reference-to-reference during the motion itself.
+        with self._lock:
+            self._safety.reconcile_position(list(self._state.joints))
         self._check_auto_payload()
 
     def _end_motion(self) -> None:
