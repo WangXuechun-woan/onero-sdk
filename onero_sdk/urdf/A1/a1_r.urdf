@@ -201,9 +201,13 @@
   </joint>
   <link name="Link7">
     <inertial>
+      <!-- v1 placeholder: mass=0.20 kg (real flange assembly weighs 150-250 g;
+           CAD export lists 17.8 g which drives adaptive kp to zero for joint 7).
+           Inertia scaled linearly (11.27x) from original CAD values.
+           TODO: replace with measured flange mass + identified inertia. -->
       <origin xyz="1.47613369245068e-07 -0.00220208936053254 0.00293052049190767" rpy="0 0 0" />
-      <mass value="0.017750642712371" />
-      <inertia ixx="2.81905932676299E-06" ixy="-6.21960184961116E-11" ixz="1.30043055619343E-13" iyy="1.89453432604882E-06" iyz="2.22904228240977E-09" izz="4.60994189557911E-06" />
+      <mass value="0.20" />
+      <inertia ixx="3.17582E-05" ixy="-7.00790E-10" ixz="1.46490E-12" iyy="2.13489E-05" iyz="2.51150E-08" izz="5.19434E-05" />
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />

@@ -43,6 +43,16 @@ _PARAMS: dict[str, tuple[float, float]] = {
 _KP_MAX = 500.0
 _KD_MAX = 5.0
 
+# Adaptive-gain safety floor. When URDF inertias underestimate a distal link
+# (e.g. A1's Link7 CAD export lists 17.8 g), M_ii → 0 makes M×ωn² collapse to
+# near-zero kp, and the servo cannot hold against friction/cogging. Compare
+# with industry practice: Franka Panda's smallest joint stiffness (flange
+# joint 7) is 50 Nm/rad, UR5's Gazebo controller uses kp=10 on wrist3. Our
+# floor sits between those, high enough that a 0.1 rad tracking error still
+# produces ~2 Nm — sufficient to overcome typical BLDC cogging (~0.3 Nm).
+_KP_FLOOR = 20.0
+_KD_FLOOR = 0.5
+
 
 class GainPolicy:
     """
@@ -111,6 +121,20 @@ class GainPolicy:
         scale = np.minimum(kp_scale, kd_scale)
         kps *= scale
         kds *= scale
+
+        # Enforce safety floor. Applied after the ceiling so it wins on the
+        # low end; the two regimes are disjoint in practice (floor bumps only
+        # tiny-M joints, ceiling scales only huge-M ones).
+        below_floor = kps < _KP_FLOOR
+        if np.any(below_floor):
+            kps[below_floor] = _KP_FLOOR
+            # Recompute kd for bumped joints so damping ratio ζ is preserved
+            # against the raised kp (kd_crit = 2·ζ·√(kp·M)); otherwise the joint
+            # would be under-damped and could ring.
+            kds[below_floor] = 2.0 * zeta * np.sqrt(
+                _KP_FLOOR * np.maximum(M_diag[below_floor], 1e-6)
+            )
+        np.maximum(kds, _KD_FLOOR, out=kds)
 
         return kps.tolist(), kds.tolist()
 

@@ -88,16 +88,19 @@ class TestGainPolicyReflectedInertia:
         """Verify kp = M_eff × ωn², kd = 2ζ√(kp×M_eff) for unclamped case."""
         from onero_sdk.gain_policy import GainPolicy, Stiffness
 
-        policy = GainPolicy(stiffness=Stiffness.SOFT)  # ωn=8, ζ=0.7 → small gains, won't hit limit
-        M = np.diag([0.001] * 7)  # Very small → gains won't saturate
-        reflected = np.array([0.0005] * 7)
+        # Use M_eff large enough to sit above _KP_FLOOR (20) and small enough
+        # to stay below _KP_MAX (500). SOFT (ωn=8, ζ=0.7) with M_eff=0.4 gives
+        # kp = 0.4 × 64 = 25.6, kd = 2×0.7×√(25.6×0.4) = 4.48 — both untouched.
+        policy = GainPolicy(stiffness=Stiffness.SOFT)
+        M = np.diag([0.3] * 7)
+        reflected = np.array([0.1] * 7)
 
         kps, kds = policy.compute(M, reflected_inertia=reflected)
 
-        M_eff = 0.001 + 0.0005  # 0.0015
+        M_eff = 0.3 + 0.1  # 0.4
         omega_n = 8.0
         zeta = 0.7
-        expected_kp = M_eff * omega_n ** 2  # 0.0015 * 64 = 0.096
+        expected_kp = M_eff * omega_n ** 2  # 25.6
         expected_kd = 2 * zeta * np.sqrt(expected_kp * M_eff)
 
         for i in range(7):
@@ -120,6 +123,104 @@ class TestGainPolicyReflectedInertia:
         ratios = [kds[i] / kps[i] for i in range(7) if kps[i] > 0.01]
         assert len(set(round(r, 6) for r in ratios)) == 1, (
             f"kd/kp ratios differ across joints: {ratios}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GainPolicy floor (Fix A) — protects against URDF inertia underestimation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestGainPolicyFloor:
+    """
+    Verify the adaptive-gain safety floor kicks in when M×ωn² collapses.
+
+    Motivating case: A1's URDF Link7 mass was 17.8 g (CAD mesh-only, no flange
+    assembly modeled) → M[6,6] ≈ 0 → kp ≈ 0.25 Nm/rad → wrist could not hold
+    against friction and soft-watchdog fired on real hardware.
+    """
+
+    def test_tiny_inertia_bumps_kp_to_floor(self):
+        """M_eff so small that kp = M×ωn² << 20 gets clamped up to _KP_FLOOR."""
+        from onero_sdk.gain_policy import GainPolicy, Stiffness, _KP_FLOOR
+
+        policy = GainPolicy(stiffness=Stiffness.STIFF)  # ωn=40
+        # M so small that kp would be 0.04 without floor
+        M = np.diag([1e-5] * 7)
+        kps, _ = policy.compute(M)
+        for i in range(7):
+            assert kps[i] == _KP_FLOOR, (
+                f"Joint {i}: kp={kps[i]}, expected {_KP_FLOOR} (floor)")
+
+    def test_kd_recomputed_at_floor_preserves_damping(self):
+        """When kp is bumped, kd = 2·ζ·√(kp_floor×M) — not the raw formula value."""
+        from onero_sdk.gain_policy import GainPolicy, Stiffness, _KP_FLOOR
+
+        policy = GainPolicy(stiffness=Stiffness.STIFF)  # ωn=40, ζ=1.0
+        M_val = 1e-3
+        M = np.diag([M_val] * 7)
+        kps, kds = policy.compute(M)
+
+        # Raw kp would be 1.6, floored to 20. Raw kd for that raw kp would be
+        # 2·1·√(1.6·1e-3) = 0.08. With the floor rescale it should be
+        # 2·1·√(20·1e-3) = 0.283 (bounded below by _KD_FLOOR).
+        expected_kd = max(
+            2.0 * 1.0 * np.sqrt(_KP_FLOOR * M_val),
+            0.5,  # _KD_FLOOR
+        )
+        for i in range(7):
+            assert kps[i] == _KP_FLOOR
+            assert abs(kds[i] - expected_kd) < 1e-6, (
+                f"Joint {i}: kd={kds[i]:.4f}, expected {expected_kd:.4f}")
+
+    def test_kd_floor_applies_when_recomputed_still_tiny(self):
+        """M so small that even the recomputed kd is below _KD_FLOOR → floor wins."""
+        from onero_sdk.gain_policy import GainPolicy, Stiffness, _KD_FLOOR
+
+        policy = GainPolicy(stiffness=Stiffness.STIFF)
+        M = np.diag([1e-7] * 7)  # essentially zero — clamped to 1e-4 internally
+        _, kds = policy.compute(M)
+        for i in range(7):
+            assert kds[i] >= _KD_FLOOR - 1e-9, (
+                f"Joint {i}: kd={kds[i]}, must be >= {_KD_FLOOR}")
+
+    def test_healthy_joint_unaffected(self):
+        """Proximal joints with realistic M are untouched by the floor."""
+        from onero_sdk.gain_policy import GainPolicy, Stiffness, _KP_FLOOR
+
+        policy = GainPolicy(stiffness=Stiffness.STIFF)  # ωn=40
+        # M=0.05 → kp = 80 (well above floor=20 and below ceiling=500)
+        M = np.diag([0.05] * 7)
+        kps, kds = policy.compute(M)
+        omega_n = 40.0
+        expected_kp = 0.05 * omega_n ** 2  # 80
+        expected_kd = 2.0 * 1.0 * np.sqrt(expected_kp * 0.05)
+        for i in range(7):
+            assert abs(kps[i] - expected_kp) < 1e-6, (
+                f"Joint {i}: kp={kps[i]}, floor should not fire on healthy M")
+            assert abs(kds[i] - expected_kd) < 1e-6
+
+    def test_mixed_joints_only_tiny_ones_floored(self):
+        """Only joints whose kp falls below floor get bumped; others pass through."""
+        from onero_sdk.gain_policy import GainPolicy, Stiffness, _KP_FLOOR
+
+        policy = GainPolicy(stiffness=Stiffness.STIFF)  # ωn=40
+        # Joints 0,1: healthy (kp=80). Joints 5,6: tiny (kp=0.16, 0.016).
+        M = np.diag([0.05, 0.05, 0.05, 0.05, 0.05, 1e-4, 1e-5])
+        kps, _ = policy.compute(M)
+        assert abs(kps[0] - 80.0) < 1e-6
+        assert abs(kps[1] - 80.0) < 1e-6
+        assert kps[5] == _KP_FLOOR
+        assert kps[6] == _KP_FLOOR
+
+    def test_ceiling_still_applies_on_huge_M(self):
+        """Floor doesn't compromise the ceiling — huge M still saturates at kp_max/kd_max."""
+        from onero_sdk.gain_policy import GainPolicy, Stiffness
+
+        policy = GainPolicy(stiffness=Stiffness.STIFF)
+        M = np.diag([1.0] * 7)  # kp raw = 1600, kd raw ≈ 80
+        kps, kds = policy.compute(M)
+        for i in range(7):
+            assert kps[i] <= 500.0 + 1e-9
+            assert kds[i] <= 5.0 + 1e-9
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
