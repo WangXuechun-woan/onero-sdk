@@ -532,9 +532,16 @@ class _LabHandler(BaseHTTPRequestHandler):
         import re
         def _rewrite(m):
             orig = m.group(1)
-            # Strip leading ./ or ../
-            clean = orig.lstrip("./").lstrip("../")
-            # Normalise: A1/A1_r/Link1.STL  →  /assets/meshes/A1/A1_r/Link1.STL
+            # Strip all leading ../ or ./ segments
+            import posixpath
+            clean = orig
+            while clean.startswith(("../", "./")):
+                clean = clean.split("/", 1)[1]
+            # Strip a leading "meshes/" segment if present — the URL base
+            # /assets/meshes/ already points at the meshes root, so
+            # "meshes/A1/A1_r/Link1.STL" → "A1/A1_r/Link1.STL"
+            if clean.startswith("meshes/"):
+                clean = clean[len("meshes/"):]
             return f'filename="/assets/meshes/{clean.lstrip("/")}"'
         text = re.sub(r'filename="([^"]+\.(?:STL|stl|dae|DAE))"', _rewrite, text)
         self._send(200, "application/xml", text.encode("utf-8"))
