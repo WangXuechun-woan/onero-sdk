@@ -33,9 +33,9 @@ RIGHT_ARM_CHANNEL = "slcan0"   # ttyACM0
 LEFT_ARM_CHANNEL  = "slcan1"   # ttyACM1
 
 MOVE_AMPLITUDE_RAD = 0.10      # max displacement per test motion (≈5.7°)
-MOVE_DURATION_S    = 2.0       # seconds for each test motion
-SETTLE_S           = 0.5       # settle time after motion
-MAX_POSITION_ERROR = 0.05      # rad; PASS threshold
+MOVE_DURATION_S    = 4.0       # seconds for each test motion (longer = more settling time on real HW)
+SETTLE_S           = 1.0       # settle time after motion
+MAX_POSITION_ERROR = 0.08      # rad; PASS threshold (real HW has more tracking lag than sim)
 
 JOINT_MOVE_IDX = 0             # shoulder rotate — sweeps horizontally
 
@@ -141,9 +141,12 @@ def test_joint_velocity(arm, name):
 
     q0 = np.array(arm.get_state().joints)
     vel = np.zeros(len(q0))
-    vel[JOINT_MOVE_IDX] = -0.3   # rad/s toward rear
+    # Choose direction away from current position to avoid hitting limits
+    # negative j0 = rear (clear side), but if already near negative limit use positive
+    direction = +1.0 if q0[JOINT_MOVE_IDX] < -0.5 else -1.0
+    vel[JOINT_MOVE_IDX] = direction * 0.3   # rad/s toward clear side
 
-    print(f"  Applying v[{JOINT_MOVE_IDX}] = {vel[JOINT_MOVE_IDX]} rad/s for 0.5 s")
+    print(f"  Start j{JOINT_MOVE_IDX}: {q0[JOINT_MOVE_IDX]:+.4f} rad,  cmd velocity: {vel[JOINT_MOVE_IDX]:+.2f} rad/s")
     arm.speedj(vel.tolist(), duration=0.5)
     time.sleep(0.2)
 
@@ -154,7 +157,7 @@ def test_joint_velocity(arm, name):
                 displacement > 0.02, f"disp = {displacement:.4f} rad")
 
     # Return
-    arm.movej(q0.tolist(), duration=2.0)
+    arm.movej(q0.tolist(), duration=3.0)
     time.sleep(SETTLE_S)
     arm.disable()
     return p1
