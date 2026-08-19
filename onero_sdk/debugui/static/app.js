@@ -15,6 +15,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import URDFLoader from 'https://cdn.jsdelivr.net/npm/urdf-loader@0.12.7/src/URDFLoader.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 
 // ─────────────────────────────────────────────────────────────
 // 1.  Config & shared state
@@ -200,6 +201,19 @@ function loadRobot(side) {
   ghostGroup[side] = gg;
 
   const loader = new URDFLoader();
+  // urdf-loader prepends workingPath to every filename;
+  // our filenames are already absolute (/assets/meshes/...) so
+  // we override loadMeshCb to fetch them directly and skip resolvePath.
+  loader.loadMeshCb = (path, manager, done) => {
+    // strip any accidental workingPath prefix that snuck in
+    const url = path.replace(/^.*(\/assets\/meshes\/)/, '/assets/meshes/');
+    new STLLoader(manager).load(
+      url,
+      geom => done(new THREE.Mesh(geom, new THREE.MeshPhongMaterial({ color: 0xaabbcc, side: THREE.DoubleSide }))),
+      null,
+      err => done(null, err)
+    );
+  };
   loader.load(`/assets/urdf/${c.model}.urdf`, robot => {
     robot.setRotationFromMatrix(ROOT_ROT);
     applyRealMaterial(robot);
