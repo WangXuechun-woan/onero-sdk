@@ -1835,6 +1835,9 @@ class Arm(ArmTransformsMixin):
         Has no effect when explicit kp/kd are passed to motion methods.
         """
         self._gain_policy.stiffness = Stiffness(stiffness)
+        # Propagate to backend if it supports adaptive gain switching
+        if hasattr(self._backend, "set_stiffness"):
+            self._backend.set_stiffness(stiffness)
 
     def _compute_gains(self, q) -> tuple[list[float], list[float]]:
         """Compute adaptive kp/kd for current configuration. Falls back to fixed gains."""
