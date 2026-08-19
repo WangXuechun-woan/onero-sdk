@@ -139,11 +139,16 @@ def _build_model(name: str, variant: str = "r") -> ArmModel:
     joints = []
     encoding_p_max = can_cfg.get("encoding_p_max", 12.5)
     for i, lim in enumerate(limits):
+        # SolidWorks URDF exporter leaves effort=0 / velocity=0 by default.
+        # Fall back to safe simulation/hardware ceilings so encoding never
+        # divides by zero.  Real limits are enforced by the safety layer.
+        v_max = lim["v_max"] if lim["v_max"] > 0 else 30.0   # rad/s
+        t_max = lim["t_max"] if lim["t_max"] > 0 else 15.0   # Nm
         joints.append(JointSpec(
             p_min=lim["p_min"],
             p_max=lim["p_max"],
-            v_max=lim["v_max"],
-            t_max=lim["t_max"],
+            v_max=v_max,
+            t_max=t_max,
             can_id=can_cfg["can_ids"][i],
             response_id=can_cfg["response_ids"][i],
             encoding_p_max=encoding_p_max,
