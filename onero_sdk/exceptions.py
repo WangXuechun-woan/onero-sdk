@@ -67,3 +67,34 @@ class OneroSafetyError(OneroError):
         if joint_index is not None:
             msg += f" (joint {joint_index})"
         super().__init__(msg)
+
+
+class IKConvergenceError(OneroError):
+    """
+    Inverse kinematics failed to reach the target within tolerance.
+
+    Raised when the target pose cannot be reached from the given initial
+    joint configuration — typically because the target is outside the
+    workspace, near a singularity, or the IK got stuck in a local minimum.
+
+    The `q` attribute holds the best-effort joint configuration returned
+    by the solver (useful for diagnostics but NOT safe to command directly).
+    """
+
+    def __init__(self, pos_err: float, rot_err: float, iters: int,
+                 pos_tol: float, rot_tol: float,
+                 q: Optional[list] = None,
+                 target_pos: Optional[list] = None):
+        self.pos_err = pos_err
+        self.rot_err = rot_err
+        self.iters = iters
+        self.pos_tol = pos_tol
+        self.rot_tol = rot_tol
+        self.q = q
+        self.target_pos = target_pos
+        msg = (f"IK did not converge after {iters} iters: "
+               f"pos_err={pos_err*1000:.2f}mm (tol {pos_tol*1000:.2f}mm), "
+               f"rot_err={rot_err*1000:.2f}mrad (tol {rot_tol*1000:.2f}mrad).")
+        if target_pos is not None:
+            msg += f" Target: {target_pos}."
+        super().__init__(msg)

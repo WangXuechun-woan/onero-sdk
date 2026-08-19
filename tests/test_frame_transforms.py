@@ -8,12 +8,20 @@ from onero_sdk.mujoco_backend import MujocoBackend
 from onero_sdk.exceptions import OneroConfigError
 
 
+# Non-singular home pose. The URDF neutral (zero joints) sits at a hard
+# shoulder-elbow singularity for A1 (sigma_min ≈ 5e-8), which causes IK
+# to fail on any Cartesian motion. Move to this pose before any test
+# that exercises Cartesian APIs.
+_SAFE_HOME = [0.0, -0.5, 0.0, -1.0, 0.0, 0.5, 0.0]
+
+
 @pytest.fixture
 def arm_world():
     """Arm with world_frame=True (side mount) — default frame is 'world'."""
     backend = MujocoBackend(model_name="A1R")
     arm = Arm("A1R", backend=backend, mounting="side_mount_right", world_frame=True)
     arm.enable()
+    arm.movej(_SAFE_HOME, duration=0.5)
     yield arm
     arm.disable()
     backend.close()
@@ -25,6 +33,7 @@ def arm_base():
     backend = MujocoBackend(model_name="A1R")
     arm = Arm("A1R", backend=backend, world_frame=False)
     arm.enable()
+    arm.movej(_SAFE_HOME, duration=0.5)
     yield arm
     arm.disable()
     backend.close()
@@ -37,6 +46,7 @@ def arm_with_base_position():
     arm = Arm("A1R", backend=backend, mounting="side_mount_right",
               world_frame=True, base_position=[0.5, 0.3, 0.0])
     arm.enable()
+    arm.movej(_SAFE_HOME, duration=0.5)
     yield arm
     arm.disable()
     backend.close()

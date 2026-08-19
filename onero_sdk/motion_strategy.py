@@ -119,7 +119,13 @@ def cartesian_linear_frames(ctx: MotionContext, start_pos, start_rot, target_pos
         interp_pos = start_pos + alpha * pos_delta
         interp_rot = slerp_fn(start_rot, target_rot, alpha)
 
-        q = ik_solver.solve(interp_pos, interp_rot, dt=dt)
+        # In-motion tolerances: ~1mm/10mrad — matches typical Cartesian
+        # tracking accuracy. Endpoint (movep) uses stricter tolerances.
+        # strict=True: raise IKConvergenceError if any waypoint truly
+        # unreachable, so we don't silently produce bad joint targets.
+        q = ik_solver.solve(interp_pos, interp_rot, dt=dt,
+                            max_iter=50, pos_tol=1e-3, rot_tol=1e-2,
+                            strict=True)
         joints = q.tolist() if hasattr(q, 'tolist') else list(q)
 
         if step == 0 or step == ctx.steps:
@@ -153,7 +159,10 @@ def circular_arc_frames(ctx: MotionContext, center, v0, normal, total_angle,
         R_12 = slerp_fn(r1, r2, alpha)
         interp_rot = slerp_fn(R_01, R_12, alpha)
 
-        q = ik_solver.solve(interp_pos, interp_rot, dt=dt)
+        # See cartesian_linear_frames for tolerance rationale.
+        q = ik_solver.solve(interp_pos, interp_rot, dt=dt,
+                            max_iter=50, pos_tol=1e-3, rot_tol=1e-2,
+                            strict=True)
         joints = q.tolist() if hasattr(q, 'tolist') else list(q)
 
         if prev_joints is not None:

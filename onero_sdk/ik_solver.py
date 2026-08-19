@@ -16,12 +16,14 @@ except ImportError:
 
 try:
     import pink
-    from pink.tasks import FrameTask
+    from pink.tasks import FrameTask, DampingTask
     from pink.limits import ConfigurationLimit
 except ImportError:
     pink = None
 
 logger = logging.getLogger(__name__)
+
+from .exceptions import IKConvergenceError
 
 
 class IKSolver:
@@ -78,15 +80,27 @@ class IKSolver:
 
     def solve_ik(self, target_pos: np.ndarray, target_rot: np.ndarray = None,
                  q_init: np.ndarray = None, max_iter: int = 200,
-                 dt: float = 0.1, damp: float = 1e-6,
+                 dt: float = 1.0, damp: float = 1e-6,
                  lambda_max: float = 0.1, sigma_threshold: float = 0.02,
-                 pos_tol: float = 1e-3, rot_tol: float = 1e-2) -> np.ndarray:
+                 pos_tol: float = 1e-3, rot_tol: float = 1e-2,
+                 return_info: bool = False,
+                 strict: bool = False):
         """
         Damped least squares IK with adaptive singularity damping.
 
         Ramps damping from `damp` (well-conditioned) up to `lambda_max`
         (fully singular) as sigma_min drops below `sigma_threshold`. Matches
         the strategy used by DynamicsModel.jacobian_solve.
+
+        dt: step size for the Newton update `q += dt * dq`. Default 1.0 =
+        full Newton step. Values < 1 damp the update (safer for very large
+        errors, e.g. cold start from far away, but 3-10x more iterations
+        needed). Benchmarked on the A1 arm: dt=1.0 converges in 2 iters
+        for warm-start servo streaming, dt=0.1 needs ~28.
+
+        return_info: if True, returns (q, info_dict) with keys
+            iters, pos_err, rot_err, sigma_min_final, converged.
+        strict: if True, raise IKConvergenceError when tolerance is not met.
         """
         if q_init is not None:
             q = np.array(q_init, dtype=float)
@@ -98,7 +112,13 @@ class IKSolver:
             target_pos
         )
 
-        for _ in range(max_iter):
+        pos_err = float('inf')
+        rot_err = float('inf')
+        sigma_min = float('inf')
+        iters = 0
+        converged = False
+        for it in range(max_iter):
+            iters = it + 1
             pin.forwardKinematics(self._model, self._data, q)
             pin.computeJointJacobians(self._model, self._data, q)
             pin.updateFramePlacements(self._model, self._data)
@@ -112,6 +132,7 @@ class IKSolver:
             pos_err = np.linalg.norm(err[:3])
             rot_err = np.linalg.norm(err[3:])
             if pos_err < pos_tol and (target_rot is None or rot_err < rot_tol):
+                converged = True
                 break
 
             J = pin.getFrameJacobian(
@@ -123,7 +144,7 @@ class IKSolver:
                 J = J[:3, :]
                 err = err[:3]
 
-            sigma_min = np.linalg.svd(J, compute_uv=False)[-1]
+            sigma_min = float(np.linalg.svd(J, compute_uv=False)[-1])
             if sigma_min < sigma_threshold:
                 ratio = sigma_min / sigma_threshold
                 lambda_sq = damp + lambda_max ** 2 * (1.0 - ratio * ratio)
@@ -133,14 +154,29 @@ class IKSolver:
             dq = np.linalg.solve(JtJ, J.T @ err)
             q = q + dt * dq
             q = np.clip(q, self._q_min, self._q_max)
-        else:
-            # Loop completed without convergence
+
+        if not converged:
             logger.warning(
                 f"IK did not converge after {max_iter} iterations "
                 f"(pos_err={pos_err:.4f}m, rot_err={rot_err:.4f}rad). "
                 f"Result may be inaccurate.")
+            if strict:
+                raise IKConvergenceError(
+                    pos_err=float(pos_err), rot_err=float(rot_err),
+                    iters=iters, pos_tol=pos_tol, rot_tol=rot_tol,
+                    q=q.tolist(), target_pos=target_pos.tolist(),
+                )
 
         self._q = q
+        if return_info:
+            info = {
+                "iters": iters,
+                "pos_err": float(pos_err),
+                "rot_err": float(rot_err),
+                "sigma_min_final": sigma_min,
+                "converged": converged,
+            }
+            return q, info
         return q
 
     def solve_ik_with_nullspace(self, target_pos: np.ndarray,
@@ -165,7 +201,7 @@ class IKSolver:
             q_ref = (self._q_min + self._q_max) / 2.0
 
         max_iter = kwargs.get('max_iter', 200)
-        dt = kwargs.get('dt', 0.1)
+        dt = kwargs.get('dt', 1.0)
         damp = kwargs.get('damp', 1e-6)
         lambda_max = kwargs.get('lambda_max', 0.1)
         sigma_threshold = kwargs.get('sigma_threshold', 0.02)
@@ -227,10 +263,16 @@ class PinkIKSolver:
     """
     Higher-level IK using the pink library (task-based, QP solver).
     Better for real-time streaming with smooth trajectories.
+
+    damping_cost: joint-velocity regularization added to the QP. 0.01
+    (default) bounds the residual pos_err near singularities to ~2 mm
+    instead of ~25 mm without damping, with negligible cost when the
+    arm is well-conditioned. Set to 0 for pure task-based behaviour.
     """
 
     def __init__(self, urdf_path: str, ee_frame: str = "Link7",
-                 solver: str = "quadprog"):
+                 solver: str = "quadprog",
+                 damping_cost: float = 0.01):
         if pin is None or pink is None:
             raise RuntimeError("pinocchio and pink are required: pip install pin pin-pink")
         self._model = pin.buildModelFromUrdf(urdf_path)
@@ -241,6 +283,8 @@ class PinkIKSolver:
         self._configuration = pink.Configuration(self._model, self._data,
                                                   pin.neutral(self._model))
         self._ee_task = FrameTask(ee_frame, position_cost=1.0, orientation_cost=1.0)
+        self._damping_cost = damping_cost
+        self._damping_task = DampingTask(cost=damping_cost) if damping_cost > 0 else None
         self._limits = [ConfigurationLimit(self._model)]
 
     @property
@@ -248,30 +292,62 @@ class PinkIKSolver:
         return self._nq
 
     def solve(self, target_pos: np.ndarray, target_rot: np.ndarray = None,
-              dt: float = 0.005) -> np.ndarray:
+              dt: float = 0.005, max_iter: int = 10,
+              pos_tol: float = 1e-4, rot_tol: float = 1e-3,
+              return_info: bool = False,
+              strict: bool = False):
+        """
+        Solve IK via pink task-based QP.
+
+        return_info: if True, returns (q, info_dict) with keys
+            iters, pos_err, rot_err, converged.
+        strict: if True, raise IKConvergenceError when tolerance is not met.
+        """
         target_se3 = pin.SE3(
             target_rot if target_rot is not None else np.eye(3),
             target_pos
         )
         self._ee_task.set_target(target_se3)
-        # Multi-step convergence: iterate until close or max steps reached
-        for _ in range(10):
-            velocity = pink.solve_ik(self._configuration, [self._ee_task], dt,
+        tasks = [self._ee_task]
+        if self._damping_task is not None:
+            tasks.append(self._damping_task)
+        ee_id = self._model.getFrameId(self._ee_frame)
+        pos_err = float('inf')
+        rot_err = 0.0
+        iters = 0
+        converged = False
+        for it in range(max_iter):
+            iters = it + 1
+            velocity = pink.solve_ik(self._configuration, tasks, dt,
                                      solver=self._solver, limits=self._limits)
             self._configuration.integrate_inplace(velocity, dt)
-            # Check convergence
             pin.forwardKinematics(self._model, self._data, self._configuration.q)
             pin.updateFramePlacements(self._model, self._data)
-            ee_id = self._model.getFrameId(self._ee_frame)
             oMf = self._data.oMf[ee_id]
-            pos_err = np.linalg.norm(oMf.translation - target_pos)
+            pos_err = float(np.linalg.norm(oMf.translation - target_pos))
             if target_rot is not None:
-                rot_err = np.linalg.norm(pin.log3(oMf.rotation.T @ target_rot))
+                rot_err = float(np.linalg.norm(pin.log3(oMf.rotation.T @ target_rot)))
             else:
                 rot_err = 0.0
-            if pos_err < 1e-4 and rot_err < 1e-3:
+            if pos_err < pos_tol and rot_err < rot_tol:
+                converged = True
                 break
-        return self._configuration.q
+        q = self._configuration.q
+        if strict and not converged:
+            raise IKConvergenceError(
+                pos_err=pos_err, rot_err=rot_err, iters=iters,
+                pos_tol=pos_tol, rot_tol=rot_tol,
+                q=q.tolist(), target_pos=target_pos.tolist(),
+            )
+        if return_info:
+            info = {
+                "iters": iters,
+                "pos_err": pos_err,
+                "rot_err": rot_err,
+                "converged": converged,
+            }
+            return q, info
+        return q
 
     def reset(self, q: np.ndarray):
         self._configuration = pink.Configuration(self._model, self._data, q)

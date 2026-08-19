@@ -832,6 +832,10 @@ class Arm(ArmTransformsMixin):
             fk = self._get_fk()
             with self._lock:
                 current_joints = list(self._state.joints)
+            # Sync IK internal state to actual arm joints. Prevents drift-driven
+            # local-minima failures when the IK solver's cached q disagrees with
+            # the real robot (e.g. after freedrive, jog, or manual moves).
+            ik.reset(np.array(current_joints))
             start_pos_ee, start_rot_ee = fk.get_ee_pose(current_joints)
 
             # Auto-compute duration
@@ -897,8 +901,13 @@ class Arm(ArmTransformsMixin):
 
         target_pos, target_rot = self._parse_pose("movep", position, rotation, frame=frame)
 
-        # Solve IK for target
-        q_target = ik.solve(target_pos, target_rot, dt=1.0 / self._control_freq)
+        # Sync IK to actual joints, then solve strictly (raise on non-convergence
+        # instead of silently returning a bad q — see docs/bench_ik_report.md).
+        with self._lock:
+            current_joints = list(self._state.joints)
+        ik.reset(np.array(current_joints))
+        q_target = ik.solve(target_pos, target_rot,
+                            dt=1.0 / self._control_freq, strict=True)
         target_joints = q_target.tolist() if hasattr(q_target, 'tolist') else list(q_target)
 
         # Joint-space interpolation to that target
@@ -951,6 +960,8 @@ class Arm(ArmTransformsMixin):
             # Start point: current FK in base/flange frame (same as _parse_pose output)
             with self._lock:
                 current_joints = list(self._state.joints)
+            # Sync IK internal state to actual joints (see movel).
+            ik.reset(np.array(current_joints))
             p0, r0 = fk.get_ee_pose(current_joints)
 
             # Fit circle through 3 points
@@ -1083,7 +1094,15 @@ class Arm(ArmTransformsMixin):
 
         target_pos, target_rot = self._parse_pose("servop", position, rotation, frame=frame)
 
-        q = ik.solve(target_pos, target_rot, dt=1.0 / self._control_freq)
+        # Sync IK to actual joints each tick — for real-time control the
+        # measured state is the authoritative init, and stale internal q
+        # can trigger IK drift over long teleop sessions. Reset cost is
+        # ~0.02ms (negligible even at 1kHz).
+        with self._lock:
+            current_joints = list(self._state.joints)
+        ik.reset(np.array(current_joints))
+        q = ik.solve(target_pos, target_rot,
+                     dt=1.0 / self._control_freq, strict=True)
         joints = q.tolist() if hasattr(q, 'tolist') else list(q)
 
         return self.servoj(joints, kp=kp, kd=kd)
