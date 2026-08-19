@@ -7,6 +7,7 @@ whether commands go to real hardware or simulation.
 """
 
 import math
+import time
 import atexit
 import logging
 import threading
@@ -34,6 +35,11 @@ from .safe_backend import SafeBackend
 from .gain_policy import GainPolicy, Stiffness
 from .arm_transforms import ArmTransformsMixin
 from .mounting import MountingPreset, MountingConfig
+from .zero_offset_backend import ZeroOffsetBackend
+from .zero_calibration import (
+    load_zero_offset, save_zero_offset, remove_zero_offset, validate_offsets,
+)
+from .can_backend import CanBackend
 
 logger = logging.getLogger(__name__)
 
@@ -102,16 +108,37 @@ class Arm(ArmTransformsMixin):
             raise OneroConfigError("Cannot specify both 'channel' and 'backend'")
 
         if backend is not None:
-            self._backend = backend
+            raw_backend = backend
         elif channel is not None:
             from .can_backend import CanBackend
-            self._backend = CanBackend(
+            raw_backend = CanBackend(
                 channel, self._model_info.joints,
                 on_miss=self._on_can_miss,
                 on_fault=self._on_can_fault,
             )
         else:
             raise OneroConfigError("Must specify either 'channel' or 'backend'")
+
+        self._channel = channel
+
+        # Zero-offset layer: translates between user coordinates (URDF zero)
+        # and raw motor coordinates. Loaded from disk once at __init__; can be
+        # updated at runtime via set_current_position_as_zero() / clear_zero_offset().
+        if isinstance(raw_backend, ZeroOffsetBackend):
+            self._backend = raw_backend
+        else:
+            offsets = load_zero_offset(
+                self._model_info.name, channel, self._model_info.num_joints
+            )
+            try:
+                validate_offsets(offsets, self._model_info.joints)
+            except OneroConfigError as e:
+                logger.warning(
+                    "Stored zero offsets are outside safe encoding range — "
+                    "falling back to zero offsets. %s", e,
+                )
+                offsets = [0.0] * self._model_info.num_joints
+            self._backend = ZeroOffsetBackend(raw_backend, offsets)
 
         # Safety monitor
         joint_limits = []
@@ -346,6 +373,244 @@ class Arm(ArmTransformsMixin):
                 except Exception:
                     pass
             self._backend.close()
+
+    # ─── Zero-Point Calibration ──────────────────────────────────────────────
+
+    def get_zero_offset(self) -> list[float]:
+        """
+        Return the currently active software zero offsets (one per joint, rad).
+
+        These are added to user-space target positions on the wire and
+        subtracted from feedback readings, so the caller always sees positions
+        relative to the calibrated zero.
+        """
+        if isinstance(self._backend, ZeroOffsetBackend):
+            return self._backend.get_offsets()
+        return [0.0] * self._model_info.num_joints
+
+    def set_current_position_as_zero(self, note: str = "") -> list[float]:
+        """
+        Set the arm's current physical pose as the new software zero.
+
+        Preconditions:
+        - Arm must be disabled (call arm.disable() first).
+        - Physical pose must already be positioned at what you want to become
+          the new zero (use a jig, alignment pins, or freedrive to place it).
+
+        Effects:
+        - Reads current raw joint positions from motors (5 samples, median).
+        - Validates that URDF joint limits + offset stay within 90% of the
+          motor encoding range; raises OneroConfigError otherwise.
+        - Applies the new offset immediately (subsequent get_state / commands
+          use the new zero).
+        - Persists to ~/.onero/zero_offsets/<model>_<channel>.json so the
+          next session picks it up automatically.
+
+        This is a SOFTWARE-only calibration; it does NOT change motor firmware
+        flash. If you also need the calibration to survive across other SDKs
+        (ROS, vendor tools), separately call persist_zero_to_motor_flash()
+        AFTER validating the new zero works as expected.
+
+        Args:
+            note: Free-form annotation stored alongside the offset file.
+
+        Returns:
+            The new offset array (rad, one per joint).
+        """
+        if self._enabled:
+            raise OneroError(
+                "Arm must be disabled before setting zero. "
+                "Call arm.disable() first."
+            )
+        if not isinstance(self._backend, ZeroOffsetBackend):
+            raise OneroError(
+                "Zero-offset layer not present on this backend "
+                "(custom backend wrapping?). Cannot set zero."
+            )
+
+        # Median over multiple samples to reject encoder noise / residual drift.
+        raw_backend = self._backend.inner
+        samples = []
+        for _ in range(5):
+            samples.append(list(raw_backend.get_state().joints))
+            time.sleep(0.005)
+        new_offsets = [float(np.median(col)) for col in zip(*samples)]
+
+        # Warn if samples were noticeably inconsistent (encoder jitter or
+        # arm still settling). Threshold: 0.5 mrad max-min per joint.
+        for i, col in enumerate(zip(*samples)):
+            spread = max(col) - min(col)
+            if spread > 5e-4:
+                logger.warning(
+                    "Joint %d encoder samples span %.4f rad — arm may still "
+                    "be settling. Consider waiting before calling this again.",
+                    i, spread,
+                )
+
+        validate_offsets(new_offsets, self._model_info.joints)
+        self._backend.set_offsets(new_offsets)
+
+        path = save_zero_offset(
+            self._model_info.name, self._channel, new_offsets, note=note,
+        )
+        logger.info(
+            "Zero offsets set from current pose (%s). Saved to %s",
+            [f"{o:+.4f}" for o in new_offsets], path,
+        )
+        return list(new_offsets)
+
+    def clear_zero_offset(self) -> None:
+        """
+        Reset software zero offsets to zero and delete the persisted file.
+
+        Requires the arm to be disabled — otherwise the servo would jump by
+        the offset amount on the next command cycle.
+
+        After this call, user coordinates equal raw motor coordinates
+        (i.e. whatever the motor firmware considers zero).
+        """
+        if self._enabled:
+            raise OneroError(
+                "Arm must be disabled before clearing zero. "
+                "Otherwise the servo would jump by the current offset "
+                "amount on the next command. Call arm.disable() first."
+            )
+        if isinstance(self._backend, ZeroOffsetBackend):
+            self._backend.set_offsets([0.0] * self._model_info.num_joints)
+        removed = remove_zero_offset(self._model_info.name, self._channel)
+        logger.info(
+            "Zero offsets cleared%s.",
+            f" (removed {self._model_info.name}_{self._channel}.json)"
+            if removed else " (no persisted file to remove)",
+        )
+
+    def persist_zero_to_motor_flash(self, confirm: bool = False) -> None:
+        """
+        Burn the current software zero offset into motor firmware flash.
+
+        Uses the Damiao SET_ZERO command (0xFF...0xFE) followed by
+        save_params on each motor. After this call succeeds, the motor's
+        internal zero has been shifted so the current arm pose reads as
+        raw zero — and the SDK-side offset is cleared to match.
+
+        This is IRREVERSIBLE without repeating the procedure. Use it only
+        when the mechanical zero must be shared across multiple SDKs or
+        upstream tools (e.g. ROS, the Damiao vendor SDK) that cannot see
+        our offset file.
+
+        Runs in two phases:
+        - Phase 1: SET_ZERO on every motor. If any motor fails, aborts
+          before touching flash on the remaining motors.
+        - Phase 2: save_params on every motor. If any fails, the new zero
+          exists in motor RAM but will revert on power cycle.
+
+        On partial failure, a CRITICAL log entry names which joints hold
+        the new zero and which still have the old — you MUST re-run this
+        API until all motors succeed, or the arm will boot with an
+        inconsistent zero point across joints.
+
+        Preconditions:
+        - Arm must be disabled.
+        - Backend must be a CanBackend (real hardware); simulation is not
+          supported.
+        - confirm=True must be passed explicitly.
+
+        Raises:
+            OneroError if any precondition fails, or if any motor fails
+            SET_ZERO or save_params.
+        """
+        if not confirm:
+            raise OneroError(
+                "persist_zero_to_motor_flash is irreversible. "
+                "Pass confirm=True to proceed."
+            )
+        if self._enabled:
+            raise OneroError(
+                "Arm must be disabled before writing motor flash. "
+                "Call arm.disable() first."
+            )
+
+        if not isinstance(self._backend, ZeroOffsetBackend):
+            raise OneroError("Zero-offset layer missing; cannot persist to flash.")
+        raw_backend = self._backend.inner
+        if not isinstance(raw_backend, CanBackend):
+            raise OneroError(
+                "persist_zero_to_motor_flash requires a CanBackend "
+                f"(got {type(raw_backend).__name__}). "
+                "Simulation backends have no flash to write."
+            )
+
+        motors = raw_backend._motors
+        n = len(motors)
+
+        # Phase 1: SET_ZERO on all motors. Track outcomes explicitly.
+        set_zero_ok, set_zero_fail = [], []
+        for i, motor in enumerate(motors):
+            try:
+                state = motor.set_zero()
+                if state is None:
+                    set_zero_fail.append(i)
+                else:
+                    set_zero_ok.append(i)
+            except Exception as e:
+                logger.exception("Joint %d SET_ZERO raised: %s", i, e)
+                set_zero_fail.append(i)
+
+        if set_zero_fail:
+            logger.critical(
+                "PARTIAL FLASH WRITE — SET_ZERO succeeded on joints %s but "
+                "FAILED on joints %s. Motor RAM zero is now INCONSISTENT "
+                "across joints (unsaved). Power-cycling now reverts all to "
+                "old zero. RE-RUN persist_zero_to_motor_flash(confirm=True) "
+                "until every joint succeeds, or the arm zero will be wrong.",
+                set_zero_ok, set_zero_fail,
+            )
+            raise OneroError(
+                f"persist_zero_to_motor_flash: {len(set_zero_fail)}/{n} "
+                f"motors failed SET_ZERO (joints {set_zero_fail}). "
+                f"See CRITICAL log for recovery."
+            )
+
+        # Phase 2: persist to flash. Failure here is the dangerous case —
+        # motor RAM has the new zero but flash still holds the old one.
+        save_ok, save_fail = [], []
+        for i, motor in enumerate(motors):
+            try:
+                if motor.save_params():
+                    save_ok.append(i)
+                else:
+                    save_fail.append(i)
+            except Exception as e:
+                logger.exception("Joint %d save_params raised: %s", i, e)
+                save_fail.append(i)
+
+        if save_fail:
+            logger.critical(
+                "PARTIAL FLASH PERSIST — all %d joints accepted SET_ZERO "
+                "(new zero live in motor RAM), but save_params FAILED on "
+                "joints %s. On next power-cycle, joints %s will keep the "
+                "new zero (persisted), joints %s will revert to the OLD "
+                "zero — arm will boot with SPLIT zero point. RE-RUN "
+                "persist_zero_to_motor_flash(confirm=True) until every "
+                "joint's save_params succeeds.",
+                n, save_fail, save_ok, save_fail,
+            )
+            raise OneroError(
+                f"persist_zero_to_motor_flash: {len(save_fail)}/{n} "
+                f"motors failed save_params (joints {save_fail}). "
+                f"See CRITICAL log for recovery."
+            )
+
+        # All motors succeeded. Motor flash now holds the zero; clear the
+        # SDK-side software offset and file so we don't double-apply.
+        self._backend.set_offsets([0.0] * self._model_info.num_joints)
+        remove_zero_offset(self._model_info.name, self._channel)
+        logger.warning(
+            "Zero point committed to motor firmware flash (%d motors). "
+            "SDK-side offset cleared. This is irreversible without a "
+            "repeat of the procedure.",
+            n,
+        )
 
     def __enter__(self):
         self.enable()
