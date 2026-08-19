@@ -14,7 +14,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import URDFLoader from 'https://cdn.jsdelivr.net/npm/urdf-loader@0.12.7/src/URDFLoader.js';
+import URDFLoader from '/static/vendor/urdf-loader/URDFLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 
 // ─────────────────────────────────────────────────────────────
