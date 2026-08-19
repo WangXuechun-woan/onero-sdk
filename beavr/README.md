@@ -43,12 +43,16 @@ beavr-onero --can-channel=can0 --mounting=side_mount_left
 beavr-onero \
     --can-channel=can0 \         # CAN 通道
     --mounting=side_mount_left \ # 安装方式 (见下方)
+    --host=localhost \           # VR ZMQ host
     --vr-port=5555 \             # VR ZMQ 端口
     --vr-topic=hand_right \      # VR 手 (hand_right/hand_left)
     --scale=0.8 \                # 位移缩放
     --scale-xyz=0.8,0.8,0.7 \   # 各轴独立缩放
     --control-freq=60 \          # 控制频率
-    --smoothing=0.3              # 滤波系数 (0=重滤波, 1=无滤波)
+    --smoothing=0.3 \            # 滤波系数 (0=重滤波, 1=无滤波)
+    --max-frame-age=0.2 \        # VR 断流超时秒数
+    --max-linear-speed=0.5 \     # 最大末端线速度 m/s
+    --max-angular-speed=2.0      # 最大末端角速度 rad/s
 ```
 
 ### 安装方式
@@ -71,6 +75,14 @@ beavr-onero \
 | Menu | 复位到初始位 |
 
 首次按下 Trigger 时自动校准 VR 原点 (当前手柄位置 = A1 当前末端位置)。
+
+## 稳定性与安全策略
+
+- ZMQ 输入/输出默认设置低水位队列和 `LINGER=0`，控制链路优先使用最新帧，避免执行积压旧动作。
+- 超过 `--max-frame-age` 没有收到新 VR 帧时自动暂停遥操作并 hold，重新按 Trigger 后重新校准原点。
+- VR 位姿会经过工作空间裁剪、线速度限幅、角速度限幅、旋转矩阵合法化和低通滤波。
+- `--mounting` 会传入 Onero SDK 的 `Arm(..., mounting=...)`，重力补偿和坐标变换会使用实际安装方式。
+- Grip 默认不控制夹爪，也不会因为误按中断遥操作；接入真实末端执行器后再启用夹爪控制。
 
 ## 架构
 

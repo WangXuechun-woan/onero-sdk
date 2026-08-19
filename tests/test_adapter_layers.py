@@ -8,6 +8,7 @@ the adapter's data transformations, coordinate conversions, and API contracts.
 import sys
 import os
 import math
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -487,6 +488,129 @@ class TestBAVRSmoothing:
 
         # With alpha=1, filtered_pos should have moved from origin
         assert not np.allclose(robot._filtered_pos, robot._arm_origin_pos, atol=0.01)
+
+
+class TestBAVRTeleopRobustness:
+    """Test BAVR teleop hardening behavior."""
+
+    def test_angular_speed_limit_caps_large_rotation(self):
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "beavr", "beavr_onero"))
+        from robot_wrapper import OneroA1Robot, OneroA1Config
+
+        config = OneroA1Config(
+            smoothing_alpha=1.0,
+            adaptive_smoothing=False,
+            deadzone=0.0,
+            max_linear_speed=10.0,
+            max_angular_speed=0.1,
+            max_rotation_jump=10.0,
+        )
+        robot = OneroA1Robot(config)
+        robot._arm = MagicMock()
+        robot._connected = True
+        robot._arm_origin_pos = np.array([0.3, 0.0, 0.3])
+        robot._arm_origin_rot = np.eye(3)
+        robot._filtered_pos = np.array([0.3, 0.0, 0.3])
+        robot._filtered_rot = np.eye(3)
+        robot._last_raw_target_pos = robot._arm_origin_pos.copy()
+        robot._last_raw_target_rot = np.eye(3)
+        robot._last_command_time = time.monotonic() - 0.1
+        robot._vr_origin_pos = np.array([0.0, 0.5, 0.0])
+        robot._vr_origin_rot = np.eye(3)
+
+        angle = math.pi / 2
+        Rz = np.array([
+            [math.cos(angle), -math.sin(angle), 0.0],
+            [math.sin(angle), math.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        action = {
+            "target_position": robot._vr_origin_pos.copy(),
+            "target_rotation": Rz,
+        }
+        robot.send_action(action)
+
+        robot._arm.servol.assert_called()
+        pose = robot._arm.servol.call_args[0][0]
+        assert np.linalg.norm(pose[3:6]) < 0.05
+
+    def test_grip_button_does_not_abort_without_gripper(self):
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "beavr"))
+        from beavr_onero.operator import OneroA1Operator, OneroOperatorConfig
+
+        op = OneroA1Operator(OneroOperatorConfig())
+        op._robot = MagicMock()
+        op._is_active = True
+        op._process_vr_data({
+            "buttons": {"trigger": True, "grip": True},
+            "position": [0.0, 0.5, 0.0],
+            "rotation": np.eye(3).reshape(-1).tolist(),
+        })
+
+        op._robot.send_action.assert_called()
+        assert op._gripper_closed is True
+
+    def test_stale_vr_stream_pauses_and_holds(self):
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "beavr"))
+        from beavr_onero.operator import OneroA1Operator, OneroOperatorConfig
+
+        op = OneroA1Operator(OneroOperatorConfig(max_frame_age_s=0.01))
+        op._robot = MagicMock()
+        op._is_active = True
+        op._last_vr_rx_time = time.monotonic() - 1.0
+
+        op._handle_missing_vr_frame()
+
+        assert op._is_active is False
+        op._robot.hold.assert_called_once()
+
+    def test_connect_passes_mounting_to_sdk(self, monkeypatch):
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "beavr"))
+        from beavr_onero import robot_wrapper
+        from beavr_onero.robot_wrapper import OneroA1Robot, OneroA1Config
+
+        captured = {}
+
+        class FakeArm:
+            def __init__(self, model, **kwargs):
+                captured["model"] = model
+                captured.update(kwargs)
+                self.state = _mock_arm_state()
+
+            def enable(self):
+                return self.state
+
+        class FakeFK:
+            def __init__(self, _path):
+                pass
+
+            def get_ee_pose(self, _joints):
+                return np.array([0.3, 0.0, 0.3]), np.eye(3)
+
+        monkeypatch.setattr(robot_wrapper, "Arm", FakeArm)
+        monkeypatch.setattr(robot_wrapper, "_find_urdf", lambda _model: "dummy.urdf")
+        monkeypatch.setattr(robot_wrapper, "URDFChain", FakeFK)
+
+        robot = OneroA1Robot(OneroA1Config(
+            model="A1L",
+            can_channel="can2",
+            mounting="side_mount_right",
+            world_frame=True,
+        ))
+        robot.connect()
+
+        assert captured["model"] == "A1L"
+        assert captured["channel"] == "can2"
+        assert captured["mounting"] == "side_mount_right"
+        assert captured["world_frame"] is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
