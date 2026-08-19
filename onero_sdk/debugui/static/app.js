@@ -45,10 +45,10 @@ const preview = { left: [], right: [] };
 const previewLocked = { left: false, right: false };
 const dragging = { left: false, right: false };
 
-// Auto-send throttle for MoveJ
+// Auto-send state (unused timer slot kept for compat)
 const autoSendState = {
-  left:  { t: 0, timer: null },
-  right: { t: 0, timer: null },
+  left:  {},
+  right: {},
 };
 
 // Servo 100Hz loop state (client side)
@@ -297,7 +297,7 @@ function sceneDeltaToArm(from, to) {
 }
 
 const BALL_COLORS    = { left: 0x3b82f6, right: 0xf97316 };
-const MOVEL_HZ       = 5;
+const MOVEL_HZ       = 2;
 const MOVEL_MAX_STEP = 0.025;
 
 const ballMeshes  = {};
@@ -457,8 +457,8 @@ function renderPanel(side) {
     <button class="btn" id="${side}_mj_app">Apply</button>
     <label style="font-size:12px"><input id="${side}_mj_auto" type="checkbox" checked/> Auto</label>
     <label style="font-size:12px;margin-left:4px"><input id="${side}_mj_ghost" type="checkbox" checked/> Ghost</label>
-    <span style="margin-left:auto;font-size:11px;color:#6b7a91">speed(m/s)</span>
-    <input id="${side}_mj_speed" class="speed" type="number" min="0.05" max="2" step="0.05" value="0.5"/>
+    <span style="margin-left:auto;font-size:11px;color:#6b7a91">speed(rad/s)</span>
+    <input id="${side}_mj_speed" class="speed" type="number" min="0.05" max="5" step="0.05" value="0.5"/>
   </div>
   <div class="joints" id="${side}_mj_joints"></div>
 </div>
@@ -511,11 +511,15 @@ function renderPanel(side) {
 
   // ── MoveJ sliders ──────────────────────────────────
   _buildSliders(`${side}_mj_joints`, side, limits, s.joints, (i, v) => {
+    // input: update preview & ghost only, do NOT send during drag
     preview[side][i] = v;
     previewLocked[side] = true;
     updateGhost(side);
-    scheduleAutoSend(side, false);
-  }, () => scheduleAutoSend(side, true));
+  }, () => {
+    // change (pointerup / release): send once if Auto is checked
+    const auto = panel.querySelector(`#${side}_mj_auto`);
+    if (auto && auto.checked) sendMoveJ(side);
+  });
 
   // ── Servo sliders ──────────────────────────────────
   _buildSliders(`${side}_sv_joints`, side, limits, s.joints, (i, v) => {
@@ -560,7 +564,7 @@ function renderPanel(side) {
     api(side, 'home').then(d => setStatus(side, d.msg));
 
   // ── MoveJ buttons ──────────────────────────────────
-  panel.querySelector(`#${side}_mj_app`).onclick = () => sendMoveJ(side, true);
+  panel.querySelector(`#${side}_mj_app`).onclick = () => sendMoveJ(side);
   panel.querySelector(`#${side}_mj_ghost`).onchange = ev =>
     setGhostVisible(side, ev.target.checked);
 
@@ -632,36 +636,23 @@ function syncSlidersToState(side, joints) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// MoveJ auto-send
+// MoveJ send
 // ─────────────────────────────────────────────────────────────
 
-const AUTO_SEND_INTERVAL_MS = 300;
+const MOVEJ_MIN_DELTA = 0.005;  // rad — ignore sends with tiny displacement
 
-function scheduleAutoSend(side, force) {
-  const panel = document.getElementById(CFG[side].panel);
-  const auto  = panel && panel.querySelector(`#${side}_mj_auto`);
-  if (!auto || !auto.checked) return;
-
-  const st = autoSendState[side];
-  const elapsed = Date.now() - st.t;
-  if (force || elapsed >= AUTO_SEND_INTERVAL_MS) {
-    sendMoveJ(side, false);
-    st.t = Date.now();
-    if (st.timer) { clearTimeout(st.timer); st.timer = null; }
-  } else if (!st.timer) {
-    st.timer = setTimeout(() => {
-      st.timer = null;
-      st.t = Date.now();
-      sendMoveJ(side, false);
-    }, AUTO_SEND_INTERVAL_MS - elapsed);
+function sendMoveJ(side) {
+  // Skip if displacement from current hardware state is negligible
+  const cur = armState[side].joints;
+  const tgt = preview[side];
+  if (cur.length && tgt.length) {
+    const maxD = Math.max(...tgt.map((q, i) => Math.abs(q - (cur[i] || 0))));
+    if (maxD < MOVEJ_MIN_DELTA) return;
   }
-}
-
-function sendMoveJ(side, force) {
   const panel = document.getElementById(CFG[side].panel);
   const speedEl = panel && panel.querySelector(`#${side}_mj_speed`);
   const speed = speedEl ? parseFloat(speedEl.value) || 0.5 : 0.5;
-  api(side, 'movej', { joints: preview[side].slice(), speed })
+  api(side, 'movej', { joints: tgt.slice(), speed })
     .then(d => setStatus(side, `movej: ${d.ok ? 'ok' : 'fail'} ${d.msg || ''}`));
 }
 
