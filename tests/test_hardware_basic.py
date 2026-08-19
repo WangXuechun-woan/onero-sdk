@@ -68,7 +68,7 @@ def test_enable_disable(arm, name):
     arm.enable()
     time.sleep(0.3)
     state = arm.get_state()
-    positions = state.q
+    positions = np.array(state.joints)
     print(f"  Joint positions after enable: {fmt(positions)}")
     max_drift = float(np.max(np.abs(positions)))
     p1 = result("Enable succeeds and joints read near zero",
@@ -86,7 +86,7 @@ def test_state_readback(arm, name):
     samples = []
     for _ in range(20):
         state = arm.get_state()
-        samples.append(state.q.copy())
+        samples.append(np.array(state.joints))
         time.sleep(0.01)
     arm.disable()
     samples = np.array(samples)
@@ -103,7 +103,7 @@ def test_movej_small(arm, name):
     arm.enable()
     time.sleep(0.3)
 
-    q0 = arm.get_state().q.copy()
+    q0 = np.array(arm.get_state().joints)
     print(f"  Start: {fmt(q0)}")
 
     # target: move joint 0 slightly toward rear (negative = clear side)
@@ -115,7 +115,7 @@ def test_movej_small(arm, name):
     arm.movej(target.tolist(), duration=MOVE_DURATION_S)
     time.sleep(SETTLE_S)
 
-    q_after = arm.get_state().q.copy()
+    q_after = np.array(arm.get_state().joints)
     print(f"  Actual: {fmt(q_after)}")
     err = float(np.max(np.abs(q_after - target)))
     p1 = result(f"movej converges within {MAX_POSITION_ERROR} rad",
@@ -125,7 +125,7 @@ def test_movej_small(arm, name):
     print(f"  Returning to start…")
     arm.movej(q0.tolist(), duration=MOVE_DURATION_S)
     time.sleep(SETTLE_S)
-    q_back = arm.get_state().q.copy()
+    q_back = np.array(arm.get_state().joints)
     err_back = float(np.max(np.abs(q_back - q0)))
     p2 = result("Return to start converges",
                 err_back < MAX_POSITION_ERROR, f"max_err = {err_back:.4f} rad")
@@ -139,7 +139,7 @@ def test_joint_velocity(arm, name):
     arm.enable()
     time.sleep(0.3)
 
-    q0 = arm.get_state().q.copy()
+    q0 = np.array(arm.get_state().joints)
     vel = np.zeros(len(q0))
     vel[JOINT_MOVE_IDX] = -0.3   # rad/s toward rear
 
@@ -147,7 +147,7 @@ def test_joint_velocity(arm, name):
     arm.speedj(vel.tolist(), duration=0.5)
     time.sleep(0.2)
 
-    q_after = arm.get_state().q.copy()
+    q_after = np.array(arm.get_state().joints)
     displacement = abs(q_after[JOINT_MOVE_IDX] - q0[JOINT_MOVE_IDX])
     print(f"  Displacement on joint {JOINT_MOVE_IDX}: {displacement:.4f} rad")
     p1 = result("speedj produces positive displacement",
@@ -167,14 +167,15 @@ def test_torque_readback(arm, name):
     state = arm.get_state()
     arm.disable()
 
-    has_tau = hasattr(state, 'tau') and state.tau is not None
-    if has_tau:
-        print(f"  Torques: {fmt(state.tau)}")
+    tau = np.array(state.torques) if state.torques else None
+    has_tau = tau is not None and len(tau) > 0
+    if has_tau:  # type: ignore
+        print(f"  Torques: {fmt(tau)}")
         p1 = result("Torque field present and non-NaN",
-                    not np.any(np.isnan(state.tau)))
+                    not np.any(np.isnan(tau)))
     else:
         print("  Torque field not available in state (skipped)")
-        p1 = result("Torque field present", False, "tau not in ArmState")
+        p1 = result("Torque field present", False, "torques empty")
     return p1
 
 
