@@ -841,7 +841,7 @@ async function boot() {
   for (const side of SIDES) {
     const panel = document.getElementById(CFG[side].panel);
     if (panel.style.display !== 'none') {
-      CFG[side].model = armState[side].model || CFG[side].model;
+      CFG[side].model = armState[side].urdf_file || armState[side].model.toLowerCase().replace('a1r','a1_r').replace('a1l','a1_l') || CFG[side].model;
       loadRobot(side);
     }
   }

@@ -230,9 +230,17 @@ class ArmAdapter:
     def get_state_dict(self) -> dict:
         arm = self._arm
         limits = arm.get_joint_limits()
+        model_name = arm.model.name
+        # Map model name to actual URDF filename (case-insensitive)
+        _urdf_map = {
+            "A1R": "a1_r", "A1L": "a1_l",
+            "A1":  "a1_r",  # legacy
+        }
+        urdf_file = _urdf_map.get(model_name, model_name.lower())
         return {
             "side": self.side,
             "model": arm.model.name,
+            "urdf_file": urdf_file,
             "num_joints": arm.num_joints,
             "enabled": arm.enabled,
             "moving": arm.is_moving,
