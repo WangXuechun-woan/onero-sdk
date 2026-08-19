@@ -1,0 +1,342 @@
+:root {
+  color-scheme: dark;
+  font-family: Arial, sans-serif;
+  font-size: 13px;
+}
+
+body {
+  margin: 0;
+  background: #0f1117;
+  color: #e9eef7;
+  overflow: hidden;
+}
+
+/* ── Layout ─────────────────────────────────────── */
+#layout {
+  display: grid;
+  grid-template-columns: 58vw 42vw;
+  grid-template-rows: 100vh;
+  height: 100vh;
+}
+
+/* ── 3-D viewport ────────────────────────────────── */
+#view {
+  position: relative;
+  background: #10151f;
+  border-right: 1px solid #2d3647;
+}
+
+#canvas3d {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#hud {
+  position: absolute;
+  left: 12px;
+  top: 10px;
+  background: rgba(15, 17, 23, .78);
+  padding: 8px 10px;
+  border: 1px solid #2d3647;
+  border-radius: 8px;
+  white-space: pre-line;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+/* Status overlay top-right of 3-D view */
+#overlayStatus {
+  position: absolute;
+  right: 12px;
+  top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 44%;
+  pointer-events: none;
+}
+
+.overlayCard {
+  background: rgba(15, 17, 23, .82);
+  padding: 8px 10px;
+  border: 1px solid #2d3647;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.overlayCard .title {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.overlayCard.fault {
+  border-color: #7f3b3b;
+  background: rgba(42, 10, 10, .88);
+  color: #ffcccc;
+}
+
+/* ── Right-side control panels ───────────────────── */
+#controls {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 8px;
+  padding: 8px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.armPanel {
+  background: #171b24;
+  border: 1px solid #2d3647;
+  border-radius: 8px;
+  padding: 10px;
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* ── Panel header ────────────────────────────────── */
+.panelHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+
+.panelHeader .armTitle {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0;
+  flex: 1;
+}
+
+/* connection status dot */
+.connDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #4b5563;   /* disconnected: grey */
+  transition: background .3s;
+}
+.connDot.connected   { background: #22c55e; }
+.connDot.enabled     { background: #3b82f6; }
+.connDot.fault       { background: #ef4444; }
+
+/* ── Device row (collapsible) ────────────────────── */
+.deviceRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+  padding: 5px 7px;
+  background: #0f1320;
+  border: 1px solid #253044;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.deviceRow select {
+  flex: 1;
+  min-width: 100px;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  border: 1px solid #45475a;
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 12px;
+}
+
+.deviceRow .btn { margin: 0; padding: 4px 8px; font-size: 11px; }
+
+/* ── Main control row ────────────────────────────── */
+.controlRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+
+.controlRow .btn { margin: 0; }
+
+.faultBtn {
+  display: none;   /* shown only when fault present */
+  margin: 0;
+  padding: 4px 8px;
+  font-size: 11px;
+  background: #7f1d1d;
+  color: #fca5a5;
+  border: 1px solid #ef4444;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.faultBtn.visible { display: inline-block; }
+
+/* ── Mode tabs ───────────────────────────────────── */
+.modeTabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 8px;
+  flex-shrink: 0;
+}
+
+.modeTab {
+  border: 1px solid #39506f;
+  background: #121827;
+  color: #cfe1ff;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.modeTab.active {
+  background: #2d6cdf;
+  color: #fff;
+  border-color: #2d6cdf;
+}
+
+/* ── Mode cards ──────────────────────────────────── */
+.modeCard {
+  display: none;
+  background: #0f1320;
+  border: 1px solid #253044;
+  border-radius: 6px;
+  padding: 8px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.modeCard.active { display: flex; flex-direction: column; }
+
+.modeCard .cardToolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+
+.modeCard .cardToolbar .btn { margin: 0; padding: 4px 10px; font-size: 12px; }
+
+.modeCard .cardInfo {
+  font-size: 11px;
+  color: #6b7a91;
+  margin-bottom: 4px;
+  flex-shrink: 0;
+}
+
+/* ── Joint sliders ───────────────────────────────── */
+.joints {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 10px;
+  flex: 1;
+}
+
+.joint label {
+  display: block;
+  font-size: 11px;
+}
+
+.joint input[type=range] { width: 100%; }
+
+/* ── Buttons ─────────────────────────────────────── */
+.btn {
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 9px;
+  background: #2d6cdf;
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn:hover  { filter: brightness(1.15); }
+.btn.warn   { background: #c94b4b; }
+.btn.ok     { background: #2d9f53; }
+.btn.ghost  { background: #374151; }
+.btn.muted  { background: #2a2f3e; color: #8899aa; }
+
+/* ── Inputs ──────────────────────────────────────── */
+.speed { width: 64px; }
+.wide  { width: 100px; }
+
+/* ── Status bar ──────────────────────────────────── */
+.status {
+  flex-shrink: 0;
+  margin-top: 4px;
+  color: #6b7a91;
+  font-size: 11px;
+  min-height: 14px;
+  border-top: 1px solid #1e2a3a;
+  padding-top: 3px;
+}
+
+/* ── Stiffness selector ──────────────────────────── */
+.stiffRow {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-shrink: 0;
+  margin-bottom: 6px;
+}
+.stiffBtn {
+  border: 1px solid #39506f;
+  background: #121827;
+  color: #cfe1ff;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.stiffBtn.active { background: #0e4f8f; border-color: #3b82f6; color: #fff; }
+
+/* ── Servo / Freedrive gain row ──────────────────── */
+.gainRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: #6b7a91;
+}
+.gainRow input { width: 56px; }
+.gainRow label { color: #8db4e0; }
+
+/* ── Servo active indicator ──────────────────────── */
+.servoActive {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #4b5563;
+  margin-right: 4px;
+  transition: background .3s;
+}
+.servoActive.on { background: #22c55e; animation: pulse 1s infinite; }
+@keyframes pulse {
+  0%,100% { opacity:1; }
+  50%      { opacity:.4; }
+}
+
+/* ── Pose readout ────────────────────────────────── */
+.poseRow {
+  font-size: 11px;
+  color: #6b7a91;
+  padding: 3px 0;
+  flex-shrink: 0;
+}
+.poseRow span { color: #a8c0d9; margin-right: 6px; }

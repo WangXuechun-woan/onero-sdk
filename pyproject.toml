@@ -36,7 +36,11 @@ Repository = "https://github.com/onerobotics/onero-sdk"
 include = ["onero_sdk*"]
 
 [tool.setuptools.package-data]
-onero_sdk = ["urdf/**/*.urdf", "urdf/**/*.stl", "urdf/**/*.STL", "urdf/**/*.srdf", "meshes/**/*.STL", "meshes/**/*.stl"]
+onero_sdk = [
+    "urdf/**/*.urdf", "urdf/**/*.stl", "urdf/**/*.STL", "urdf/**/*.srdf",
+    "meshes/**/*.STL", "meshes/**/*.stl",
+    "debugui/static/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

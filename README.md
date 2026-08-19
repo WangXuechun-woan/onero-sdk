@@ -21,6 +21,7 @@
 - 多路点轨迹 + blending 平滑过渡
 - 可插拔后端架构（真实 CAN 硬件或 MuJoCo 仿真）
 - MuJoCo 双臂仿真（人体躯干 + 桌面场景）
+- **内置 Web 调试面板**（Debug UI）：浏览器操控关节/末端/伺服/freedrive，URDF 3D 渲染，无需额外依赖
 - 末端执行器支持（夹爪、灵巧手）
 - 内置安全限制（速度钳位、关节限位、超时保护）
 - 模型注册表 — 通过名称和通道即可创建机械臂实例
@@ -39,7 +40,25 @@ pip install -e ".[trajectory]" # + 高级规划（Ruckig、TOPP-RA）
 pip install -e ".[full]"      # 全部安装
 ```
 
-## 快速开始
+## Debug UI 调试面板
+
+内置 Web 调试面板，无需额外依赖，打开浏览器即可交互式调试真机或仿真：
+
+```bash
+# 真机单右臂
+python -m onero_sdk.debugui --arm right --channel slcan0
+
+# 双臂
+python -m onero_sdk.debugui --arm both --left-channel slcan1 --right-channel slcan0
+
+# 纯仿真（无需硬件）
+python -m onero_sdk.debugui --arm both --sim
+```
+
+打开 `http://localhost:8090`，支持 MoveJ / Servo / MoveL / Freedrive 四种控制模式，实时 URDF 3D 渲染。
+
+→ 详见 [docs/guide_debugui.md](docs/guide_debugui.md)
+
 
 ### 关节运动（movej）
 

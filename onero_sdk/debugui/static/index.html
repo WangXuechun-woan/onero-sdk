@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>onero SDK Debug UI</title>
+  <link rel="stylesheet" href="/static/style.css"/>
+  <script type="importmap">
+  {
+    "imports": {
+      "three":              "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/":      "https://unpkg.com/three@0.160.0/examples/jsm/",
+      "three/examples/jsm/":"https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+<div id="layout">
+  <div id="view">
+    <canvas id="canvas3d"></canvas>
+    <div id="hud">loading…</div>
+    <div id="overlayStatus">
+      <div id="overlay_left"  class="overlayCard"></div>
+      <div id="overlay_right" class="overlayCard"></div>
+    </div>
+  </div>
+  <div id="controls">
+    <div id="leftPanel"  class="armPanel"></div>
+    <div id="rightPanel" class="armPanel"></div>
+  </div>
+</div>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
