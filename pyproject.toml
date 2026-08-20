@@ -17,14 +17,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ik = ["pin>=2.7", "pink>=2.0"]
+ik = ["pin>=2.7", "pin-pink>=3.0", "quadprog>=0.1"]
 dynamics = ["pin>=2.7"]
 sim = ["mujoco>=3.0"]
 calibration = ["scipy>=1.10"]
 trajectory = ["ruckig>=0.9", "toppra>=0.6"]
 config = ["pyyaml>=6.0"]
 full = [
-    "pin>=2.7", "pink>=2.0", "mujoco>=3.0",
+    "pin>=2.7", "pin-pink>=3.0", "quadprog>=0.1", "mujoco>=3.0",
     "scipy>=1.10", "ruckig>=0.9", "toppra>=0.6", "pyyaml>=6.0",
 ]
 dev = ["pytest>=7.0", "pytest-cov>=4.0"]
@@ -39,7 +39,7 @@ include = ["onero_sdk*"]
 onero_sdk = [
     "urdf/**/*.urdf", "urdf/**/*.stl", "urdf/**/*.STL", "urdf/**/*.srdf",
     "meshes/**/*.STL", "meshes/**/*.stl",
-    "debugui/static/*",
+    "debugui/static/**/*",
 ]
 
 [tool.pytest.ini_options]
