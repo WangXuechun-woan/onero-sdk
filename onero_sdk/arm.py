@@ -66,7 +66,8 @@ class Arm(ArmTransformsMixin):
                  mounting=None,
                  world_frame: bool = False,
                  base_position: Optional[list] = None,
-                 realtime: bool = False):
+                 realtime: bool = False,
+                 with_gripper: bool = False):
         """
         Args:
             model: Arm model name (e.g. "A1R", "A1L"). Looked up in model registry.
@@ -93,12 +94,20 @@ class Arm(ArmTransformsMixin):
                       Only elevates the thread that calls enable() — see
                       `onero_sdk.realtime.apply_realtime` if running the control
                       loop in a separate thread.
+            with_gripper: Select the validated A1 gripper gravity profile.  This
+                          applies the develop SDK's empirical per-joint gravity
+                          multipliers; it does not invent a gripper mass.  Use
+                          ``set_payload()`` separately when the gripper mass and
+                          centre of gravity are known.
         """
         self._model_info = get_model(model)
         self._on_error = on_error
         self._enabled = False
         self._realtime_requested = realtime
         self._realtime_status = None
+        if not isinstance(with_gripper, bool):
+            raise OneroConfigError("with_gripper must be a bool")
+        self._with_gripper = with_gripper
 
         # Mounting, world-frame, and TCP transforms
         self._init_transforms(mounting, world_frame, base_position)
@@ -288,6 +297,38 @@ class Arm(ArmTransformsMixin):
         return self._enabled
 
     @property
+    def with_gripper(self) -> bool:
+        """Whether the validated gripper gravity profile is active."""
+        return self._with_gripper
+
+    @property
+    def gravity_profile_scales(self) -> tuple[float, ...]:
+        """Per-joint gravity multipliers currently used by the arm."""
+        scales = (
+            self._model_info.gravity_scale_with_gripper
+            if self._with_gripper
+            else self._model_info.gravity_scale_no_gripper
+        )
+        return tuple(scales) if scales is not None else (1.0,) * self.num_joints
+
+    def set_gripper_profile(self, enabled: bool = True) -> None:
+        """Select the calibrated A1 gravity profile for a physical gripper.
+
+        The profile is an empirical multiplier on the model gravity torque,
+        matching the validated develop SDK.  It is intentionally separate
+        from :meth:`set_payload`, which describes a measured mass/CoG and is
+        added as an explicit point-mass payload.
+
+        This setting may be changed while disabled.  Changing it during an
+        active freedrive loop takes effect on the next control frame, so callers
+        should normally configure it before ``enable()``.
+        """
+        if not isinstance(enabled, bool):
+            raise OneroConfigError("gripper profile enabled must be a bool")
+        self._with_gripper = enabled
+        logger.info("Gravity gripper profile %s", "enabled" if enabled else "disabled")
+
+    @property
     def end_effector(self) -> Optional[EndEffector]:
         """Attached end effector (gripper or hand), or None."""
         return self._end_effector
@@ -358,21 +399,33 @@ class Arm(ArmTransformsMixin):
             self._realtime_status = None
         logger.info("Arm disabled")
 
-    def close(self) -> None:
-        """Disable arm and release all resources (CAN socket, end effector)."""
+    def close(self, disable: bool = True) -> None:
+        """Release resources, optionally without sending a disable command.
+
+        The default remains the safe historical behavior: stop freedrive,
+        disable the arm, and then close the transport.  ``disable=False`` is
+        an explicit detach operation for supervised hardware workflows that
+        intentionally leave the drives enabled.  It must not be used on an
+        unattended or faulted arm.
+        """
         try:
             # Stop freedrive thread before disabling to avoid socket I/O on closed bus
             if self._freedrive_active:
                 self.freedrive_disable()
-            if self._enabled:
+            if disable and self._enabled:
                 self.disable()
+            elif not disable:
+                # Mark the high-level object detached so the interpreter-exit
+                # safety hook does not send a late disable frame on a closed
+                # socket.  The backend performs the same state transition.
+                self._enabled = False
         finally:
             if self._end_effector is not None:
                 try:
                     self._end_effector.shutdown()
                 except Exception:
                     pass
-            self._backend.close()
+            self._backend.close(disable=disable)
 
     # ─── Zero-Point Calibration ──────────────────────────────────────────────
 
@@ -1475,7 +1528,7 @@ class Arm(ArmTransformsMixin):
 
     # ─── Freedrive (Teach Mode) ──────────────────────────────────────────────
 
-    def freedrive_enable(self, damping: float = 0.5,
+    def freedrive_enable(self, damping: float = 0.0,
                          free_axes: Optional[list[int]] = None,
                          lock_stiffness: float = 200.0) -> None:
         """
@@ -1489,9 +1542,9 @@ class Arm(ArmTransformsMixin):
 
         Args:
             damping: Joint damping gain (kd) during freedrive.
-                     Range: 0.0 (no resistance, arm feels weightless) to
-                     ~5.0 (very stiff, hard to move). Default 0.5 is light
-                     resistance suitable for demonstration recording.
+                     Range: 0.0 (no velocity resistance, matching the
+                     develop-user zero-force mode) to ~5.0 (very stiff,
+                     hard to move). Default is 0.0.
             free_axes: Which Cartesian axes are free to move [x,y,z,rx,ry,rz].
                       1=free, 0=locked. Default None means all axes free
                       (equivalent to [1,1,1,1,1,1]). Example: [0,0,1,0,0,0]
@@ -1529,7 +1582,10 @@ class Arm(ArmTransformsMixin):
                     with self._lock:
                         q = list(self._state.joints)
 
-                    gravity_torques = dynamics.gravity_torques(q)
+                    # Use the same calibrated path as motion execution and
+                    # the public gravity_torque() API.  Calling DynamicsModel
+                    # directly here would silently bypass ``with_gripper``.
+                    gravity_torques = self._gravity_torques(q)
                     torques = list(gravity_torques)
 
                     if lock_mask is not None:
@@ -1592,7 +1648,7 @@ class Arm(ArmTransformsMixin):
         self._safety.reconcile_position(cur_joints)
         logger.info("Freedrive mode disabled")
 
-    def freedrive_step(self, damping: float = 0.5) -> ArmState:
+    def freedrive_step(self, damping: float = 0.0) -> ArmState:
         """
         Single-frame freedrive (for users who manage their own loop).
 
@@ -1603,10 +1659,9 @@ class Arm(ArmTransformsMixin):
             Current arm state.
         """
         self._check_enabled()
-        dynamics = self._get_dynamics()
         n = self.num_joints
         q = list(self._state.joints)
-        gravity_torques = dynamics.gravity_torques(q)
+        gravity_torques = self._gravity_torques(q)
 
         self._state = self._safe_backend.command(
             positions=q,
@@ -1736,7 +1791,7 @@ class Arm(ArmTransformsMixin):
             limits=limits, kp=kp, kd=kd,
         )
 
-        g = np.array(dynamics.gravity_torques(list(q)))
+        g = np.array(self._gravity_torques(list(q)))
         state = self._safe_backend.command(
             positions=self._force_mode_origin,
             velocities=[0.0] * n,
@@ -1787,6 +1842,7 @@ class Arm(ArmTransformsMixin):
             mounting: "side_mount_right"
             world_frame: true
             base_position: [0, -0.15, 0]
+            with_gripper: true
             safety:
               max_velocity: 5.0
               timeout_frames: 10
@@ -1805,6 +1861,7 @@ class Arm(ArmTransformsMixin):
         mounting = raw.get("mounting")
         world_frame = raw.get("world_frame", False)
         base_position = raw.get("base_position")
+        with_gripper = kwargs.get("with_gripper", raw.get("with_gripper", False))
 
         safety_raw = raw.get("safety", {})
         safety = SafetyConfig(
@@ -1815,10 +1872,12 @@ class Arm(ArmTransformsMixin):
         ) if safety_raw else None
 
         extra = {k: v for k, v in kwargs.items()
-                 if k not in ("backend", "mounting", "world_frame", "base_position")}
+                 if k not in ("backend", "mounting", "world_frame", "base_position",
+                              "with_gripper")}
         return cls(model=model, channel=channel, backend=backend,
                    mounting=mounting, world_frame=world_frame,
-                   base_position=base_position, safety=safety, **extra)
+                   base_position=base_position, safety=safety,
+                   with_gripper=with_gripper, **extra)
 
     def set_gains(self, kp: float, kd: float) -> None:
         """Update default control gains (also updates GainPolicy fallback)."""
@@ -2495,11 +2554,44 @@ class Arm(ArmTransformsMixin):
             self._dynamics.set_gravity(self._gravity_in_base.tolist())
         return self._dynamics
 
+    def _apply_gravity_profile(self, torques: list[float]) -> list[float]:
+        """Apply the selected, model-level gravity calibration profile.
+
+        The develop SDK's ``with_gripper`` flag is not a payload-mass
+        estimate.  It selects an empirical per-joint calibration which is
+        applied after the URDF/RNEA gravity calculation.  A measured gripper
+        or tool mass is still configured independently through ``set_payload``.
+        """
+        scales = self.gravity_profile_scales
+        if len(scales) != self.num_joints:
+            raise OneroConfigError(
+                f"gravity profile has {len(scales)} entries for "
+                f"{self.num_joints} joints"
+            )
+        values = np.asarray(torques, dtype=float)
+        if values.shape != (self.num_joints,) or not np.all(np.isfinite(values)):
+            raise OneroConfigError(
+                "gravity torque vector is non-finite or has the wrong size"
+            )
+        factors = np.asarray(scales, dtype=float)
+        if not np.all(np.isfinite(factors)) or np.any(factors < 0.0):
+            raise OneroConfigError("gravity profile contains invalid scale factors")
+        compensated = values * factors
+        if not np.all(np.isfinite(compensated)):
+            raise OneroConfigError("scaled gravity torque vector is non-finite")
+        return compensated.tolist()
+
     def _gravity_torques(self, joint_positions: list[float]) -> list[float]:
-        """Compute gravity compensation torques via dynamics model (pinocchio)."""
+        """Compute calibrated gravity compensation via Pinocchio."""
         try:
             dynamics = self._get_dynamics()
-            return dynamics.gravity_torques(joint_positions)
+            return self._apply_gravity_profile(
+                dynamics.gravity_torques(joint_positions)
+            )
+        except OneroConfigError:
+            # A malformed calibration must fail closed; silently replacing
+            # it with zero feedforward is unsafe for a physical freedrive.
+            raise
         except ImportError:
             if not getattr(self, '_gravity_warned', False):
                 self._gravity_warned = True
@@ -2616,7 +2708,7 @@ class Arm(ArmTransformsMixin):
         dynamics = self._get_dynamics()
         if q is None:
             q = self._state.joints
-        return dynamics.gravity_torques(q)
+        return self._apply_gravity_profile(dynamics.gravity_torques(q))
 
     def coriolis_torque(self, q: list[float] | None = None,
                         dq: list[float] | None = None) -> list[float]:

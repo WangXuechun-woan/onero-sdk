@@ -8,6 +8,10 @@ Quick start::
     # CLI — real hardware, single arm
     python -m onero_sdk.debugui --arm right --channel slcan0
 
+    # CLI — validated vertical left arm with gripper compensation
+    python -m onero_sdk.debugui --arm left --channel can0 \
+        --mount a1_vertical --gripper-compensation on
+
     # CLI — dual arm
     python -m onero_sdk.debugui --arm both --left-channel slcan1 --right-channel slcan0
 

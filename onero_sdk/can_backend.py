@@ -6,9 +6,9 @@ back-to-back before collecting responses. This minimizes bus idle time
 and achieves higher control frequencies than sequential send-wait.
 """
 
-import time
 import logging
 import threading
+import time
 from typing import Optional
 
 from .backend import ArmBackend, ArmState
@@ -70,7 +70,13 @@ class CanBackend(ArmBackend):
         self._motors: list[Motor] = []
         self._response_ids: list[int] = []
         for spec in joint_specs:
-            limits = MotorLimits(p_max=spec.encoding_p_max, v_max=spec.v_max, t_max=spec.t_max)
+            # MIT codec ranges are motor-protocol constants.  Keep them
+            # separate from URDF joint velocity/effort safety limits.
+            limits = MotorLimits(
+                p_max=spec.encoding_p_max,
+                v_max=spec.codec_v_max,
+                t_max=spec.codec_t_max,
+            )
             motor = Motor(self._bus, spec.can_id, spec.response_id, limits)
             self._motors.append(motor)
             self._response_ids.append(spec.response_id)
@@ -91,6 +97,54 @@ class CanBackend(ArmBackend):
             return self._enable_impl()
 
     def _enable_impl(self) -> ArmState:
+        # An already-enabled arm may be holding a gravity-loaded pose.  Do
+        # not run the normal clear-error/sequential-enable sequence in that
+        # state: clear_error can remove the motor's holding torque long enough
+        # for the arm to sag.  Reuse only an all-enabled state; mixed states
+        # are rejected rather than silently completing a hazardous transition.
+        startup_states = []
+        for index, motor in enumerate(self._motors):
+            state = motor.get_feedback(timeout=0.05)
+            if state is None:
+                raise OneroHardwareError(
+                    joint_index=index,
+                    error_code=0,
+                    description="Cannot verify motor state before enable",
+                )
+            if state.error not in (MotorError.DISABLED, MotorError.ENABLED):
+                raise OneroHardwareError(
+                    joint_index=index,
+                    error_code=int(state.error),
+                    description=(
+                        "Motor fault before enable: "
+                        f"error=0x{int(state.error):X}"
+                    ),
+                )
+            startup_states.append(state)
+
+        startup_errors = {int(state.error) for state in startup_states}
+        if startup_errors == {int(MotorError.ENABLED)}:
+            self._enabled = True
+            self._bus.flush_rx()
+            logger.info(
+                "All motors are already enabled; skipped clear-error/re-enable "
+                "sequence to preserve holding torque"
+            )
+            return self._get_state_impl()
+        if startup_errors != {int(MotorError.DISABLED)}:
+            detail = ", ".join(
+                f"J{i + 1}=0x{int(state.error):X}"
+                for i, state in enumerate(startup_states)
+            )
+            raise OneroHardwareError(
+                joint_index=next(
+                    i for i, state in enumerate(startup_states)
+                    if state.error == MotorError.ENABLED
+                ),
+                error_code=0,
+                description=f"Mixed motor states before enable: {detail}",
+            )
+
         errors = []
 
         for attempt in range(_ENABLE_RETRY_COUNT):
@@ -150,13 +204,18 @@ class CanBackend(ArmBackend):
         with self._lock:
             ts = time.monotonic()
 
-            for i, motor in enumerate(self._motors):
-                data = encode_mit(
+            # Encode every joint before the first bus write so an invalid
+            # value cannot result in a partially sent arm command.
+            frames = [
+                (mit_frame_id(motor.can_id), encode_mit(
                     positions[i], velocities[i],
                     kps[i], kds[i], torques[i],
                     motor.limits,
-                )
-                self._bus.send(mit_frame_id(motor.can_id), data)
+                ))
+                for i, motor in enumerate(self._motors)
+            ]
+            for frame_id, data in frames:
+                self._bus.send(frame_id, data)
 
             return self._collect_responses(ts)
 
@@ -164,9 +223,14 @@ class CanBackend(ArmBackend):
         with self._lock:
             ts = time.monotonic()
 
-            for i, motor in enumerate(self._motors):
-                data = encode_velocity(velocities[i])
-                self._bus.send(vel_frame_id(motor.can_id), data)
+            if len(velocities) != self._num_joints:
+                raise ValueError(f"expected {self._num_joints} velocities")
+            frames = [
+                (vel_frame_id(motor.can_id), encode_velocity(velocities[i]))
+                for i, motor in enumerate(self._motors)
+            ]
+            for frame_id, data in frames:
+                self._bus.send(frame_id, data)
 
             return self._collect_responses(ts)
 
@@ -174,12 +238,15 @@ class CanBackend(ArmBackend):
         with self._lock:
             ts = time.monotonic()
 
-            for i, motor in enumerate(self._motors):
-                data = encode_mit(
+            frames = [
+                (mit_frame_id(motor.can_id), encode_mit(
                     0.0, 0.0, 0.0, 0.0, torques[i],
                     motor.limits,
-                )
-                self._bus.send(mit_frame_id(motor.can_id), data)
+                ))
+                for i, motor in enumerate(self._motors)
+            ]
+            for frame_id, data in frames:
+                self._bus.send(frame_id, data)
 
             return self._collect_responses(ts)
 
@@ -204,15 +271,15 @@ class CanBackend(ArmBackend):
 
         return ArmState(joints=joints, velocities=vels, torques=torqs, timestamp=ts)
 
-    def close(self) -> None:
+    def close(self, disable: bool = True) -> None:
         with self._lock:
-            if self._enabled:
+            if disable and self._enabled:
                 for motor in self._motors:
                     try:
                         motor.disable()
                     except Exception:
                         pass
-                self._enabled = False
+            self._enabled = False
             self._bus.close()
 
     # ─── Private ─────────────────────────────────────────────────────────────

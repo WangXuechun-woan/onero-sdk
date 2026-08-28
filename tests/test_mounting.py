@@ -67,6 +67,13 @@ class TestGravityInBaseFrame:
         assert np.allclose(g, expected, atol=1e-10), \
             f"UPRIGHT gravity: {g}, expected {expected}"
 
+    def test_a1_vertical_matches_validated_left_and_right_gravity(self):
+        config = MountingConfig(preset=MountingPreset.A1_VERTICAL)
+        g = gravity_in_base_frame(config)
+        expected = np.array([-GRAVITY_MAGNITUDE, 0.0, 0.0])
+        assert np.allclose(g, expected, atol=1e-10), \
+            f"A1_VERTICAL gravity: {g}, expected {expected}"
+
     def test_side_mount_left_gravity_direction(self):
         config = MountingConfig(preset=MountingPreset.SIDE_MOUNT_LEFT)
         g = gravity_in_base_frame(config)
@@ -202,6 +209,10 @@ class TestResolveMounting:
     def test_string(self):
         config = resolve_mounting("side_mount_left")
         assert config.preset == MountingPreset.SIDE_MOUNT_LEFT
+
+    def test_a1_vertical_string(self):
+        config = resolve_mounting("a1_vertical")
+        assert config.preset == MountingPreset.A1_VERTICAL
 
     def test_preset_enum(self):
         config = resolve_mounting(MountingPreset.CEILING)

@@ -48,6 +48,10 @@ pip install -e ".[full]"      # 全部安装
 # 真机单右臂
 python -m onero_sdk.debugui --arm right --channel slcan0
 
+# 人形竖直安装、带夹爪补偿的真机单左臂
+python -m onero_sdk.debugui --arm left --channel can0 \
+  --mount a1_vertical --gripper-compensation on
+
 # 双臂
 python -m onero_sdk.debugui --arm both --left-channel slcan1 --right-channel slcan0
 

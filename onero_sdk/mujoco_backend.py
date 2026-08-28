@@ -73,24 +73,11 @@ class MujocoBackend(ArmBackend):
         self._enabled = False
         self._nq = self._model.nq
         # Torque limits from model registry (peak torque ~2x continuous for real motors)
-        # Fall back to a generous simulation limit when URDF has effort=0.
         from .model_registry import get_model
         model_info = get_model(model_name)
-        raw_limits = np.array([j.t_max for j in model_info.joints]) * 2.0
-        # When URDF doesn't specify effort, use 200 Nm as a safe simulation ceiling
-        self._torque_limits = np.where(raw_limits > 0, raw_limits, 200.0)
+        self._torque_limits = np.array([j.t_max for j in model_info.joints]) * 2.0
         # Disable contact checking for faster sim (arm-only, no environment)
         self._model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
-        # Pre-allocated MjData for gravity computation (avoid per-substep allocation)
-        self._grav_data = mujoco.MjData(self._model)
-        # Pre-compute adaptive fallback gains from MuJoCo mass matrix at zero config
-        # This adapts automatically to updated URDF inertia parameters.
-        self._adaptive_gains = {
-            "stiff":  self._compute_mujoco_gains(omega_n=40.0, zeta=1.0),
-            "medium": self._compute_mujoco_gains(omega_n=20.0, zeta=1.0),
-            "soft":   self._compute_mujoco_gains(omega_n=8.0,  zeta=0.7),
-        }
-        self._adaptive_kps, self._adaptive_kds = self._adaptive_gains["stiff"]
 
     @staticmethod
     def _find_urdf(model_name: str) -> str:
@@ -108,43 +95,6 @@ class MujocoBackend(ArmBackend):
         raise FileNotFoundError(
             f"No URDF found for model '{model_name}'. Searched: {candidates}")
 
-    def _compute_mujoco_gains(self, omega_n: float = 40.0, zeta: float = 1.0,
-                               kp_max: float = 500.0, kd_max: float = 5.0,
-                               kp_floor: float = 30.0, kd_floor: float = 0.5
-                               ) -> tuple[np.ndarray, np.ndarray]:
-        """Compute per-joint PD gains from MuJoCo mass matrix at zero config.
-
-        Uses the same impedance formula as GainPolicy but reads M(q) directly
-        from MuJoCo, so gains automatically adapt to any URDF inertia update.
-        """
-        tmp_data = mujoco.MjData(self._model)
-        mujoco.mj_forward(self._model, tmp_data)
-        M = np.zeros((self._nq, self._nq))
-        mujoco.mj_fullM(self._model, tmp_data, M)
-        M_diag = np.maximum(np.diag(M), 1e-4)
-
-        kps = M_diag * omega_n ** 2
-        kds = 2.0 * zeta * np.sqrt(kps * M_diag)
-
-        kp_scale = np.minimum(1.0, kp_max / np.maximum(kps, 1e-10))
-        kd_scale = np.minimum(1.0, kd_max / np.maximum(kds, 1e-10))
-        scale = np.minimum(kp_scale, kd_scale)
-        kps *= scale
-        kds *= scale
-
-        # Enforce floor so distal lightweight joints still track
-        below = kps < kp_floor
-        if np.any(below):
-            kps[below] = kp_floor
-            kds[below] = 2.0 * zeta * np.sqrt(kp_floor * np.maximum(M_diag[below], 1e-6))
-        np.maximum(kds, kd_floor, out=kds)
-        return kps, kds
-
-    def set_stiffness(self, stiffness: str) -> None:
-        """Switch adaptive gain preset (stiff/medium/soft)."""
-        if stiffness in self._adaptive_gains:
-            self._adaptive_kps, self._adaptive_kds = self._adaptive_gains[stiffness]
-
     @property
     def num_joints(self) -> int:
         return self._nq
@@ -153,24 +103,6 @@ class MujocoBackend(ArmBackend):
         self._enabled = True
         mujoco.mj_resetData(self._model, self._data)
         mujoco.mj_forward(self._model, self._data)
-        # Stabilise at zero config under gravity using stiff PD + gravity comp.
-        # Without this, the first state returned reflects free-fall drift and
-        # the tracking-error watchdog fires immediately on motion start.
-        zero = np.zeros(self._nq)
-        kp = self._adaptive_gains["stiff"][0]
-        kd = self._adaptive_gains["stiff"][1]
-        for _ in range(self._substeps * 20):   # ~100ms of settling
-            q = self._data.qpos[:self._nq]
-            v = self._data.qvel[:self._nq]
-            self._grav_data.qpos[:self._nq] = q
-            self._grav_data.qvel[:self._nq] = 0.0
-            self._grav_data.qacc[:self._nq] = 0.0
-            mujoco.mj_inverse(self._model, self._grav_data)
-            tau_grav = self._grav_data.qfrc_inverse[:self._nq]
-            tau = kp * (zero - q) + kd * (0.0 - v) + tau_grav
-            np.clip(tau, -self._torque_limits, self._torque_limits, out=tau)
-            self._data.qfrc_applied[:self._nq] = tau
-            mujoco.mj_step(self._model, self._data)
         return self._get_state()
 
     def disable(self) -> None:
@@ -182,27 +114,15 @@ class MujocoBackend(ArmBackend):
                 torques: list[float]) -> ArmState:
         pos_target = np.array(positions)
         vel_target = np.array(velocities)
-        # Use MuJoCo-derived adaptive gains when caller provides scalar fallback
-        # (kp == default 50.0 means no explicit override from user).
-        kp_arr = np.array(kps)
-        kd_arr = np.array(kds)
-        if np.allclose(kp_arr, 50.0) and np.allclose(kd_arr, 1.0):
-            kp_arr = self._adaptive_kps.copy()
-            kd_arr = self._adaptive_kds.copy()
+        kp = np.array(kps)
+        kd = np.array(kds)
         tau_ff = np.array(torques)
 
         t0 = time.monotonic()
         for _ in range(self._substeps):
             q = self._data.qpos[:self._nq]
             v = self._data.qvel[:self._nq]
-            # Compute gravity compensation torque via MuJoCo inverse dynamics
-            # with zero acceleration and velocity (pure gravity term).
-            self._grav_data.qpos[:self._nq] = q
-            self._grav_data.qvel[:self._nq] = 0.0
-            self._grav_data.qacc[:self._nq] = 0.0
-            mujoco.mj_inverse(self._model, self._grav_data)
-            tau_grav = self._grav_data.qfrc_inverse[:self._nq]
-            tau = kp_arr * (pos_target - q) + kd_arr * (vel_target - v) + tau_ff + tau_grav
+            tau = kp * (pos_target - q) + kd * (vel_target - v) + tau_ff
             np.clip(tau, -self._torque_limits, self._torque_limits, out=tau)
             self._data.qfrc_applied[:self._nq] = tau
             mujoco.mj_step(self._model, self._data)
@@ -266,7 +186,9 @@ class MujocoBackend(ArmBackend):
     def get_state(self) -> ArmState:
         return self._get_state()
 
-    def close(self) -> None:
+    def close(self, disable: bool = True) -> None:
+        if disable:
+            self._data.qfrc_applied[:self._nq] = 0.0
         self._enabled = False
 
     def _get_state(self) -> ArmState:
@@ -278,25 +200,9 @@ class MujocoBackend(ArmBackend):
         )
 
     def reset(self, positions: list[float] = None) -> ArmState:
-        """Reset simulation to given joint positions (or zero) and re-stabilise."""
+        """Reset simulation to given joint positions (or zero)."""
         mujoco.mj_resetData(self._model, self._data)
         if positions is not None:
             self._data.qpos[:self._nq] = np.array(positions)
         mujoco.mj_forward(self._model, self._data)
-        # Re-run settling loop so the returned state is at the held position
-        target = np.array(positions) if positions is not None else np.zeros(self._nq)
-        kp = self._adaptive_gains["stiff"][0]
-        kd = self._adaptive_gains["stiff"][1]
-        for _ in range(self._substeps * 20):
-            q = self._data.qpos[:self._nq]
-            v = self._data.qvel[:self._nq]
-            self._grav_data.qpos[:self._nq] = q
-            self._grav_data.qvel[:self._nq] = 0.0
-            self._grav_data.qacc[:self._nq] = 0.0
-            mujoco.mj_inverse(self._model, self._grav_data)
-            tau_grav = self._grav_data.qfrc_inverse[:self._nq]
-            tau = kp * (target - q) + kd * (0.0 - v) + tau_grav
-            np.clip(tau, -self._torque_limits, self._torque_limits, out=tau)
-            self._data.qfrc_applied[:self._nq] = tau
-            mujoco.mj_step(self._model, self._data)
         return self._get_state()

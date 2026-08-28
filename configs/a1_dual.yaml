@@ -6,8 +6,10 @@ left:
   model: "A1L"
   channel: "can0"
   mounting: "side_mount_left"
+  with_gripper: false
 
 right:
   model: "A1R"
   channel: "can1"
   mounting: "side_mount_right"
+  with_gripper: false

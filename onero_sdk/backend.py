@@ -76,8 +76,13 @@ class ArmBackend(ABC):
         ...
 
     @abstractmethod
-    def close(self) -> None:
-        """Release resources (close sockets, etc.)."""
+    def close(self, disable: bool = True) -> None:
+        """Release resources (close sockets, etc.).
+
+        ``disable=True`` preserves the normal safe shutdown behavior.  A
+        caller that has an explicit reason to leave the drives enabled while
+        detaching the transport may pass ``disable=False``.
+        """
         ...
 
     @abstractmethod

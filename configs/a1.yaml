@@ -2,12 +2,16 @@
 model: "A1R"
 channel: "can0"
 
+# Preserve the SDK's historical unladen-arm default.  Set true explicitly
+# when a physical gripper is installed and its gravity profile is required.
+with_gripper: false
+
 # Control gains (optional — defaults from model registry)
 # kp: 50.0
 # kd: 1.0
 
 # URDF for FK/IK (optional — required for movel/movep/servop)
-# urdf: "onero_description/urdf/A1/a1_l.urdf"
+# urdf: "onero_sdk/urdf/A1/a1_r.urdf"
 
 # Safety limits (optional — defaults active)
 # safety:

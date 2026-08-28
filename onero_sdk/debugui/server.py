@@ -174,8 +174,11 @@ class ArmAdapter:
         elif name == "movel":
             self._last_msg = "movel running…"
             self._last_fault = ""
+            rotation = cmd.get("rotation")
+            if rotation is None and len(cmd["position"]) == 3:
+                _, rotation = arm.get_pose()
             state = arm.movel(cmd["position"],
-                              rotation=cmd.get("rotation"),
+                              rotation=rotation,
                               speed=cmd.get("speed"),
                               duration=cmd.get("duration"))
             self._update_state(state)

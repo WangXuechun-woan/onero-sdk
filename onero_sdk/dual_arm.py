@@ -57,6 +57,8 @@ class DualArm:
                right_backend: Optional[ArmBackend] = None,
                left_mounting: str = "side_mount_left",
                right_mounting: str = "side_mount_right",
+               left_with_gripper: bool = False,
+               right_with_gripper: bool = False,
                base_position_left: Optional[list] = None,
                base_position_right: Optional[list] = None,
                arm_spacing: Optional[float] = None,
@@ -77,6 +79,10 @@ class DualArm:
             right_backend: Custom backend for right arm (alternative to channel).
             left_mounting: Left arm mounting preset. Default "side_mount_left".
             right_mounting: Right arm mounting preset. Default "side_mount_right".
+            left_with_gripper: Select the calibrated gripper gravity profile
+                               for the left arm.
+            right_with_gripper: Select the calibrated gripper gravity profile
+                                for the right arm.
             base_position_left: [x, y, z] left arm base in world frame (meters).
                                 Default: [0, +spacing/2, 0] if arm_spacing given.
             base_position_right: [x, y, z] right arm base in world frame (meters).
@@ -111,6 +117,7 @@ class DualArm:
             base_position=bp_left,
             safety=copy.copy(safety) if safety else None,
             on_error=on_error,
+            with_gripper=left_with_gripper,
         )
         right = Arm(
             model=right_model,
@@ -121,6 +128,7 @@ class DualArm:
             base_position=bp_right,
             safety=copy.copy(safety) if safety else None,
             on_error=on_error,
+            with_gripper=right_with_gripper,
         )
         return cls(left, right)
 
@@ -172,6 +180,7 @@ class DualArm:
             mounting=left_cfg.get("mounting", "side_mount_left"),
             world_frame=world_frame,
             base_position=bp_left,
+            with_gripper=left_cfg.get("with_gripper", False),
             safety=copy.copy(kwargs.get("safety")) if kwargs.get("safety") else None,
             on_error=kwargs.get("on_error"),
         )
@@ -181,6 +190,7 @@ class DualArm:
             mounting=right_cfg.get("mounting", "side_mount_right"),
             world_frame=world_frame,
             base_position=bp_right,
+            with_gripper=right_cfg.get("with_gripper", False),
             safety=copy.copy(kwargs.get("safety")) if kwargs.get("safety") else None,
             on_error=kwargs.get("on_error"),
         )

@@ -25,6 +25,9 @@ class JointSpec:
     can_id: int
     response_id: int
     encoding_p_max: float = 12.5  # Motor encoder range for MIT protocol (rad)
+    codec_v_max: float = 45.0     # Static MIT VMAX codec range (motor-side rad/s)
+    codec_t_max: float = 30.0     # Static MIT TMAX codec range (Nm)
+    gear_ratio: float = 1.0       # Motor-to-output reduction
 
 
 @dataclass
@@ -38,6 +41,12 @@ class ArmModel:
     control_freq: float = 100.0
     gear_ratios: list[float] | None = None
     rotor_inertias: list[float] | None = None
+    # Empirical gravity compensation profiles used by the validated A1
+    # drag-teaching path.  The unscaled profile preserves the historical
+    # armsdk behaviour; the gripper profile matches the develop SDK's
+    # ``with_gripper=true`` calibration.
+    gravity_scale_no_gripper: tuple[float, ...] | None = None
+    gravity_scale_with_gripper: tuple[float, ...] | None = None
 
 
 def _parse_joint_limits_from_urdf(urdf_path: Path) -> list[dict]:
@@ -101,15 +110,22 @@ _CAN_CONFIG = {
         "can_ids": [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07],
         "response_ids": [0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17],
         "encoding_p_max": 12.5,  # Motor firmware PMAX register (encoder range)
+        "codec_v_max": 45.0,
+        "codec_t_max": 30.0,
         "default_kp": 50.0,
         "default_kd": 1.0,
         "control_freq": 200.0,
-        # Gear ratios: joint 1-3 large (48.19:1), joint 4-7 small (10:1)
-        "gear_ratios": [48.19, 48.19, 48.19, 10.0, 10.0, 10.0, 10.0],
+        # A1 uses DM4340 on J1-J4 and DM4310 on J5-J7.
+        "gear_ratios": [48.19, 48.19, 48.19, 48.19, 10.0, 10.0, 10.0],
         # Estimated rotor inertia (kg·m²) — typical for this motor class
         # Large joints: ~40mm BLDC, ~4.5e-6 kg·m²
         # Small joints: ~28mm BLDC, ~1.5e-6 kg·m²
-        "rotor_inertias": [4.5e-6, 4.5e-6, 4.5e-6, 1.5e-6, 1.5e-6, 1.5e-6, 1.5e-6],
+        "rotor_inertias": [4.5e-6, 4.5e-6, 4.5e-6, 4.5e-6, 1.5e-6, 1.5e-6, 1.5e-6],
+        # Calibrated against the validated develop SDK drag path.  These are
+        # scale factors on the model gravity torque, not link masses and not
+        # a replacement for an explicitly measured payload.
+        "gravity_scale_no_gripper": [1.0] * 7,
+        "gravity_scale_with_gripper": [2.1, 1.75, 2.838, 1.89, 5.3, 4.945, 1.5],
     },
 }
 
@@ -152,6 +168,9 @@ def _build_model(name: str, variant: str = "r") -> ArmModel:
             can_id=can_cfg["can_ids"][i],
             response_id=can_cfg["response_ids"][i],
             encoding_p_max=encoding_p_max,
+            codec_v_max=can_cfg.get("codec_v_max", 45.0),
+            codec_t_max=can_cfg.get("codec_t_max", 30.0),
+            gear_ratio=can_cfg.get("gear_ratios", [1.0] * num_joints)[i],
         ))
 
     return ArmModel(
@@ -163,6 +182,12 @@ def _build_model(name: str, variant: str = "r") -> ArmModel:
         control_freq=can_cfg["control_freq"],
         gear_ratios=can_cfg.get("gear_ratios"),
         rotor_inertias=can_cfg.get("rotor_inertias"),
+        gravity_scale_no_gripper=tuple(
+            can_cfg.get("gravity_scale_no_gripper", [1.0] * num_joints)
+        ),
+        gravity_scale_with_gripper=tuple(
+            can_cfg.get("gravity_scale_with_gripper", [1.0] * num_joints)
+        ),
     )
 
 
@@ -208,6 +233,8 @@ def get_model(name: str) -> ArmModel:
         control_freq=model.control_freq,
         gear_ratios=model.gear_ratios,
         rotor_inertias=model.rotor_inertias,
+        gravity_scale_no_gripper=model.gravity_scale_no_gripper,
+        gravity_scale_with_gripper=model.gravity_scale_with_gripper,
     )
     _REGISTRY_CACHE[name] = model
     return model

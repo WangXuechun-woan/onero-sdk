@@ -238,11 +238,11 @@ class TestModelReflectedInertia:
         assert len(model.gear_ratios) == 7
 
     def test_a1_gear_ratios_values(self):
-        """A1 gear ratios match spec: joints 1-3 = 48.19, joints 4-7 = 10."""
+        """A1 gear ratios match spec: joints 1-4 = 48.19, joints 5-7 = 10."""
         from onero_sdk.model_registry import get_model
         model = get_model("A1R")
-        assert model.gear_ratios[:3] == [48.19, 48.19, 48.19]
-        assert model.gear_ratios[3:] == [10.0, 10.0, 10.0, 10.0]
+        assert model.gear_ratios[:4] == [48.19, 48.19, 48.19, 48.19]
+        assert model.gear_ratios[4:] == [10.0, 10.0, 10.0]
 
     def test_a1_model_has_rotor_inertias(self):
         """A1 model has 7 rotor inertias defined."""
@@ -271,11 +271,47 @@ class TestModelReflectedInertia:
         # Joint 1: 4.5e-6 × 48.19² ≈ 0.01045
         expected_j1 = 4.5e-6 * 48.19 ** 2
         assert abs(arm._reflected_inertia[0] - expected_j1) < 1e-8
-        # Joint 4: 1.5e-6 × 10² = 0.00015
-        expected_j4 = 1.5e-6 * 10.0 ** 2
+        # Joint 4 is also DM4340: 4.5e-6 × 48.19² ≈ 0.01045
+        expected_j4 = 4.5e-6 * 48.19 ** 2
         assert abs(arm._reflected_inertia[3] - expected_j4) < 1e-8
 
         backend.close()
+
+
+@skip_no_mujoco
+def test_dual_a1_vertical_gripper_profiles_apply_to_both_arms():
+    """DualArm.create propagates the validated A1 options symmetrically."""
+    from onero_sdk import DualArm
+    from onero_sdk.mujoco_backend import MujocoBackend
+    from onero_sdk.mounting import MountingPreset, gravity_in_base_frame
+
+    left_backend = MujocoBackend(model_name="A1L")
+    right_backend = MujocoBackend(model_name="A1R")
+    dual = DualArm.create(
+        arm_spacing=0.30,
+        left_backend=left_backend,
+        right_backend=right_backend,
+        left_mounting="a1_vertical",
+        right_mounting="a1_vertical",
+        left_with_gripper=True,
+        right_with_gripper=True,
+    )
+    try:
+        assert dual.left.mounting.preset == MountingPreset.A1_VERTICAL
+        assert dual.right.mounting.preset == MountingPreset.A1_VERTICAL
+        assert dual.left.with_gripper is True
+        assert dual.right.with_gripper is True
+        assert gravity_in_base_frame(dual.left.mounting) == pytest.approx(
+            [-9.81, 0.0, 0.0]
+        )
+        assert gravity_in_base_frame(dual.right.mounting) == pytest.approx(
+            [-9.81, 0.0, 0.0]
+        )
+    finally:
+        dual.left.close()
+        dual.right.close()
+        left_backend.close()
+        right_backend.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

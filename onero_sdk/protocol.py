@@ -2,6 +2,7 @@
 CAN protocol codec for onero actuators (DM4310/DM4340 compatible).
 """
 
+import math
 import struct
 from dataclasses import dataclass
 from enum import IntEnum
@@ -52,8 +53,8 @@ class RegisterID(IntEnum):
 @dataclass
 class MotorLimits:
     p_max: float = 12.5
-    v_max: float = 30.0
-    t_max: float = 10.0
+    v_max: float = 45.0
+    t_max: float = 30.0
     kp_max: float = 500.0
     kd_max: float = 5.0
 
@@ -76,6 +77,24 @@ def float_to_uint(x: float, x_min: float, x_max: float, bits: int) -> int:
     return int((x - offset) * ((1 << bits) - 1) / span)
 
 
+def _checked_float_to_uint(name: str, x: float, x_min: float,
+                           x_max: float, bits: int) -> int:
+    """Encode a motor command without silently saturating it."""
+    if not math.isfinite(x):
+        raise ValueError(f"MIT {name} must be finite, got {x!r}")
+    # Gain/trajectory calculations can produce a value one or two ULPs past
+    # an exact codec endpoint (for example 5.000000000000001 for kd_max=5).
+    # Treat that as the mathematical endpoint, while still rejecting a real
+    # out-of-range command.  Do not use the old broad silent saturation here.
+    tolerance = max(1e-12, 1e-12 * max(1.0, abs(x_min), abs(x_max)))
+    if x < x_min - tolerance or x > x_max + tolerance:
+        raise ValueError(
+            f"MIT {name}={x} is outside codec range [{x_min}, {x_max}]"
+        )
+    x = min(x_max, max(x_min, x))
+    return float_to_uint(x, x_min, x_max, bits)
+
+
 def uint_to_float(x_int: int, x_min: float, x_max: float, bits: int) -> float:
     span = x_max - x_min
     offset = x_min
@@ -86,11 +105,21 @@ def uint_to_float(x_int: int, x_min: float, x_max: float, bits: int) -> float:
 
 def encode_mit(p_des: float, v_des: float, kp: float, kd: float, t_ff: float,
                limits: MotorLimits) -> bytes:
-    p_int = float_to_uint(p_des, -limits.p_max, limits.p_max, 16)
-    v_int = float_to_uint(v_des, -limits.v_max, limits.v_max, 12)
-    kp_int = float_to_uint(kp, 0.0, limits.kp_max, 12)
-    kd_int = float_to_uint(kd, 0.0, limits.kd_max, 12)
-    t_int = float_to_uint(t_ff, -limits.t_max, limits.t_max, 12)
+    for field_name in ("p_max", "v_max", "t_max", "kp_max", "kd_max"):
+        value = getattr(limits, field_name)
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"Invalid MotorLimits.{field_name}={value!r}")
+
+    p_int = _checked_float_to_uint(
+        "position", p_des, -limits.p_max, limits.p_max, 16)
+    v_int = _checked_float_to_uint(
+        "velocity", v_des, -limits.v_max, limits.v_max, 12)
+    kp_int = _checked_float_to_uint(
+        "kp", kp, 0.0, limits.kp_max, 12)
+    kd_int = _checked_float_to_uint(
+        "kd", kd, 0.0, limits.kd_max, 12)
+    t_int = _checked_float_to_uint(
+        "torque", t_ff, -limits.t_max, limits.t_max, 12)
 
     data = bytearray(8)
     data[0] = (p_int >> 8) & 0xFF
@@ -112,7 +141,10 @@ def decode_mit(data: bytes, limits: MotorLimits) -> tuple[float, float, float, f
     t_int = ((data[6] & 0xF) << 8) | data[7]
 
     p_des = uint_to_float(p_int, -limits.p_max, limits.p_max, 16)
-    v_des = uint_to_float(v_int, -limits.v_max, limits.v_max, 12)
+    # A 12-bit symmetric range has no exact integer midpoint. Drives may use
+    # either adjacent centre code for rest, so normalize both to exact zero.
+    v_des = (0.0 if v_int in (2047, 2048) else
+             uint_to_float(v_int, -limits.v_max, limits.v_max, 12))
     kp = uint_to_float(kp_int, 0.0, limits.kp_max, 12)
     kd = uint_to_float(kd_int, 0.0, limits.kd_max, 12)
     t_ff = uint_to_float(t_int, -limits.t_max, limits.t_max, 12)
@@ -131,7 +163,8 @@ def decode_feedback(data: bytes, limits: MotorLimits) -> MotorState:
     t_coil = struct.unpack('b', bytes([data[7]]))[0]
 
     position = uint_to_float(pos_int, -limits.p_max, limits.p_max, 16)
-    velocity = uint_to_float(vel_int, -limits.v_max, limits.v_max, 12)
+    velocity = (0.0 if vel_int in (2047, 2048) else
+                uint_to_float(vel_int, -limits.v_max, limits.v_max, 12))
     torque = uint_to_float(torque_int, -limits.t_max, limits.t_max, 12)
 
     return MotorState(

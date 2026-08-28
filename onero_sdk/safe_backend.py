@@ -111,5 +111,10 @@ class SafeBackend(ArmBackend):
     def get_state(self) -> ArmState:
         return self._inner.get_state()
 
-    def close(self) -> None:
-        self._inner.close()
+    def close(self, disable: bool = True) -> None:
+        if disable:
+            # Keep compatibility with third-party/custom backends whose
+            # historical close() method has no keyword arguments.
+            self._inner.close()
+        else:
+            self._inner.close(disable=False)

@@ -36,6 +36,10 @@ class MountingPreset(Enum):
     """Installation orientation presets."""
 
     UPRIGHT = "upright"
+    # A1 ``vertical`` convention used by the validated develop SDK for both
+    # a1_l and a1_r.  In this installation base +X points upward, therefore
+    # world gravity resolves to [-9.81, 0, 0] in the A1 base frame.
+    A1_VERTICAL = "a1_vertical"
     SIDE_MOUNT_LEFT = "side_mount_left"
     SIDE_MOUNT_RIGHT = "side_mount_right"
     HUMANOID_LEFT = "humanoid_left"
@@ -80,6 +84,17 @@ def get_mounting_rotation(config: MountingConfig) -> np.ndarray:
     """
     if config.preset == MountingPreset.UPRIGHT:
         R = np.eye(3)
+
+    elif config.preset == MountingPreset.A1_VERTICAL:
+        # R_world_base columns are the base axes expressed in world frame.
+        # This is the matrix already exercised by the A1L real-hardware
+        # tests and matches the develop SDK's vertical gravity convention
+        # for both A1L and A1R.
+        R = np.array([
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+        ])
 
     elif config.preset == MountingPreset.SIDE_MOUNT_LEFT:
         # Base Z points toward world +Y (left)
@@ -163,6 +178,7 @@ def gravity_in_base_frame(config: MountingConfig) -> np.ndarray:
     Returns:
         3D gravity acceleration vector in base coordinates (m/s²).
         For UPRIGHT: [0, 0, -9.81]
+        For A1_VERTICAL: [-9.81, 0, 0]
         For SIDE_MOUNT_LEFT: [0, 9.81, 0] (gravity pulls along +Y in base)
     """
     R_world_base = get_mounting_rotation(config)

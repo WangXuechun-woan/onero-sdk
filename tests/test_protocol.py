@@ -5,6 +5,8 @@ Unit tests for protocol encoding/decoding.
 import struct
 import sys
 import os
+import math
+import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from onero_sdk.protocol import (  # noqa: E402
@@ -14,12 +16,16 @@ from onero_sdk.protocol import (  # noqa: E402
     encode_velocity, decode_velocity,
     encode_read_param, encode_write_param, decode_param_response,
     ENABLE_DATA, DISABLE_DATA, SET_ZERO_DATA, CLEAR_ERROR_DATA,
-    MotorLimits,
+    MotorError, MotorLimits, MotorState,
 )
+from onero_sdk.exceptions import OneroHardwareError  # noqa: E402
+from onero_sdk.model_registry import get_model  # noqa: E402
 
 
 def test_float_uint_roundtrip():
     limits = MotorLimits(p_max=12.5)
+    assert limits.v_max == 45.0
+    assert limits.t_max == 30.0
     for val in [-12.5, -5.0, 0.0, 5.0, 12.5]:
         encoded = float_to_uint(val, -12.5, 12.5, 16)
         decoded = uint_to_float(encoded, -12.5, 12.5, 16)
@@ -46,6 +52,63 @@ def test_mit_roundtrip():
     assert abs(kp2 - kp) < 0.2, f"kp: {kp2} vs {kp}"
     assert abs(kd2 - kd) < 0.01, f"kd: {kd2} vs {kd}"
     assert abs(t2 - t) < 0.01, f"torque: {t2} vs {t}"
+
+
+def test_mit_zero_golden_vector_matches_drive_reference():
+    limits = MotorLimits(p_max=12.5, v_max=45.0, t_max=30.0)
+    assert encode_mit(0.0, 0.0, 0.0, 0.0, 0.0, limits) == bytes.fromhex(
+        "7f ff 7f f0 00 00 07 ff"
+    )
+
+
+@pytest.mark.parametrize("field,value", [
+    ("position", 12.5001),
+    ("velocity", 45.0001),
+    ("kp", 500.0001),
+    ("kd", 5.0001),
+    ("torque", 30.0001),
+    ("position", math.nan),
+    ("torque", math.inf),
+])
+def test_mit_command_out_of_range_is_rejected(field, value):
+    limits = MotorLimits(p_max=12.5, v_max=45.0, t_max=30.0)
+    command = {
+        "position": 0.0,
+        "velocity": 0.0,
+        "kp": 0.0,
+        "kd": 0.0,
+        "torque": 0.0,
+    }
+    command[field] = value
+    with pytest.raises(ValueError, match=field):
+        encode_mit(
+            command["position"], command["velocity"],
+            command["kp"], command["kd"], command["torque"], limits,
+        )
+
+
+def test_mit_endpoint_rounding_is_clamped_but_not_silently_saturated():
+    """Accept an ULP-sized endpoint overshoot from floating-point math."""
+    limits = MotorLimits(p_max=12.5, v_max=45.0, t_max=30.0)
+    data = encode_mit(0.0, 0.0, 0.0, 5.0 + 1e-13, 0.0, limits)
+    assert len(data) == 8
+
+    with pytest.raises(ValueError, match="kd"):
+        encode_mit(0.0, 0.0, 0.0, 5.0001, 0.0, limits)
+
+
+@pytest.mark.parametrize("center_code", [2047, 2048])
+def test_both_mit_velocity_center_codes_decode_to_zero(center_code):
+    limits = MotorLimits(p_max=12.5, v_max=45.0, t_max=30.0)
+    command = bytearray(8)
+    command[2] = (center_code >> 4) & 0xFF
+    command[3] = (center_code & 0xF) << 4
+    assert decode_mit(bytes(command), limits)[1] == 0.0
+
+    feedback = bytearray(8)
+    feedback[3] = (center_code >> 4) & 0xFF
+    feedback[4] = (center_code & 0xF) << 4
+    assert decode_feedback(bytes(feedback), limits).velocity == 0.0
 
 
 def test_feedback_decode():
@@ -121,6 +184,93 @@ def test_param_read_write():
     struct.pack_into('<f', resp, 4, 12.5)
     result = decode_param_response(bytes(resp), as_float=True)
     assert abs(result - 12.5) < 1e-6
+
+
+@pytest.mark.parametrize("model", ["A1L", "A1R"])
+def test_can_backend_uses_static_mit_codec_without_parameter_reads(
+        monkeypatch, model):
+    import onero_sdk.can_backend as module
+
+    class FakeBus:
+        def __init__(self, channel):
+            self.sent = []
+
+        def send(self, can_id, data):
+            self.sent.append((can_id, bytes(data)))
+
+        def recv_batch(self, target_ids, timeout):
+            return {}
+
+        def flush_rx(self):
+            pass
+
+        def close(self):
+            pass
+
+    class FakeMotor:
+        def __init__(self, bus, can_id, mst_id, limits):
+            self._can_id = can_id
+            self._limits = limits
+            self._error = MotorError.DISABLED
+            self.parameter_accesses = 0
+            self.clear_error_calls = 0
+            self.enable_calls = 0
+
+        @property
+        def can_id(self):
+            return self._can_id
+
+        @property
+        def limits(self):
+            return self._limits
+
+        def get_feedback(self, timeout=0.05):
+            return MotorState(motor_id=self._can_id, error=self._error)
+
+        def clear_error(self, timeout=0.05):
+            self.clear_error_calls += 1
+            return self.get_feedback(timeout)
+
+        def enable(self, timeout=0.05):
+            self.enable_calls += 1
+            self._error = MotorError.ENABLED
+            return self.get_feedback(timeout)
+
+        def disable(self, timeout=0.05):
+            self._error = MotorError.DISABLED
+            return self.get_feedback(timeout)
+
+        def read_param(self, *args, **kwargs):
+            self.parameter_accesses += 1
+            raise AssertionError("normal backend flow must not read parameters")
+
+        def write_param(self, *args, **kwargs):
+            self.parameter_accesses += 1
+            raise AssertionError("normal backend flow must not write parameters")
+
+    monkeypatch.setattr(module, "CanBus", FakeBus)
+    monkeypatch.setattr(module, "Motor", FakeMotor)
+
+    backend = module.CanBackend("can-test", get_model(model).joints)
+    try:
+        assert all(
+            motor.limits == MotorLimits(12.5, 45.0, 30.0)
+            for motor in backend._motors
+        )
+        backend.get_state()
+        backend.enable()
+        first_enable_counts = [motor.enable_calls for motor in backend._motors]
+        first_clear_counts = [motor.clear_error_calls for motor in backend._motors]
+        backend.enable()
+        assert [motor.enable_calls for motor in backend._motors] == first_enable_counts
+        assert [motor.clear_error_calls for motor in backend._motors] == first_clear_counts
+
+        backend._motors[0]._error = MotorError.DISABLED
+        with pytest.raises(OneroHardwareError, match="Mixed motor states"):
+            backend.enable()
+        assert all(motor.parameter_accesses == 0 for motor in backend._motors)
+    finally:
+        backend.close(disable=False)
 
 
 if __name__ == "__main__":

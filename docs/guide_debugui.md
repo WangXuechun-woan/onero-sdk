@@ -15,6 +15,10 @@ python -m onero_sdk.debugui --arm right --channel slcan0
 # 真机 — 单左臂
 python -m onero_sdk.debugui --arm left --channel slcan1
 
+# 真机 — 人形竖直安装且带夹爪补偿的单左臂
+python -m onero_sdk.debugui --arm left --channel can0 \
+  --mount a1_vertical --gripper-compensation on
+
 # 真机 — 双臂
 python -m onero_sdk.debugui --arm both \
   --left-channel slcan1 --right-channel slcan0
@@ -227,6 +231,9 @@ python -m onero_sdk.debugui --help
   --left-channel CHANNEL    双臂左臂 CAN 通道（默认: slcan1）
   --right-channel CHANNEL   双臂右臂 CAN 通道（默认: slcan0）
   --arm-spacing METERS      双臂基座间距（默认: 0.36 m）
+  --mount PRESET            安装方向；default 保留原版单/双臂默认值
+  --gripper-compensation {off,on}
+                            是否启用夹爪重力补偿（默认: off）
   --sim                     使用 MuJoCo 仿真后端
   --host HOST               绑定地址（默认: 0.0.0.0）
   --port PORT               TCP 端口（默认: 8090）
