@@ -349,5 +349,29 @@ class PinkIKSolver:
             return q, info
         return q
 
-    def reset(self, q: np.ndarray):
+    def reset(self, q: np.ndarray, overshoot_tolerance: float = 0.02):
+        """Reset the warm start from feedback, tolerating small limit overshoot.
+
+        A physical controller or MuJoCo PD loop can settle a few milliradians
+        beyond a URDF hard limit. Pink rejects such a configuration before it
+        can take an IK step, which otherwise makes all later Cartesian commands
+        fail. Clamp only small overshoot; reject larger disagreement because it
+        indicates a bad zero point, sign, or model rather than servo settling.
+        """
+        q = np.asarray(q, dtype=float).copy()
+        if q.shape != (self._nq,):
+            raise ValueError(f"Expected {self._nq} joints, got shape {q.shape}")
+
+        lower = self._model.lowerPositionLimit
+        upper = self._model.upperPositionLimit
+        violation = np.maximum(lower - q, q - upper)
+        max_violation = float(np.max(np.maximum(violation, 0.0)))
+        if max_violation > overshoot_tolerance:
+            raise ValueError(
+                "IK feedback exceeds URDF limits by "
+                f"{max_violation:.6f} rad (tolerance {overshoot_tolerance:.6f})"
+            )
+
+        epsilon = 1e-6
+        q = np.minimum(np.maximum(q, lower + epsilon), upper - epsilon)
         self._configuration = pink.Configuration(self._model, self._data, q)

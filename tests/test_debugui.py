@@ -2,6 +2,8 @@
 
 import json
 import threading
+import time
+from types import SimpleNamespace
 from urllib.request import Request, urlopen
 
 import numpy as np
@@ -16,10 +18,15 @@ class RecordingArm:
     num_joints = 7
     enabled = True
     is_freedrive = False
+    is_moving = False
+    model = SimpleNamespace(name="A1L")
 
     def __init__(self):
         self.calls = []
         self.command_received = threading.Event()
+        self.motion_release = threading.Event()
+        self.motion_release.set()
+        self.fail_movep = False
 
     def stop(self):
         self.calls.append(("stop",))
@@ -36,14 +43,20 @@ class RecordingArm:
     def get_pose(self):
         return np.array([0.4, 0.1, 0.2]), np.eye(3)
 
+    def get_joint_limits(self):
+        return [(-3.14, 3.14)] * 7
+
     def movej(self, joints, speed=None, duration=None):
         self.calls.append(("movej", list(joints), speed, duration))
         self.command_received.set()
+        self.motion_release.wait(timeout=1.0)
         return self.get_state()
 
     def movep(self, position, rotation=None, speed=None, duration=None):
         self.calls.append(("movep", list(position), rotation, speed, duration))
         self.command_received.set()
+        if self.fail_movep:
+            raise RuntimeError("IK target unreachable")
         return self.get_state()
 
     def servoj(self, joints, kp=None, kd=None, velocities=None):
@@ -119,12 +132,63 @@ def test_web_ui_exposes_drag_ball_for_movep():
         with urlopen(f"http://{host}:{port}/static/app.js", timeout=1.0) as response:
             script = response.read().decode()
 
+        assert "TransformControls" in script
+        assert "control.setSpace('world')" in script
+        assert "ROOT_ROT" not in script
+        assert "CARTESIAN_MAX_STEP" not in script
+        assert "hasNewError" in script
         assert '${side}_pv_act' in script
         assert "activateCartesianBall(side, 'movep', true)" in script
-        assert "sendCartesian(side, mode)" in script
+        assert "sendCartesian(s, mode)" in script
     finally:
         server.shutdown()
         server.server_close()
+        adapter.close()
+
+
+def test_second_blocking_motion_is_rejected_while_first_is_running():
+    """A new Cartesian command cannot cancel/race an active trajectory."""
+    arm = RecordingArm()
+    arm.motion_release.clear()
+    adapter = ArmAdapter(arm, side="left")
+    try:
+        assert adapter.movej([0.05] + [0.0] * 6)["ok"]
+        assert arm.command_received.wait(timeout=1.0)
+
+        result = adapter.movep([0.42, 0.10, 0.20])
+        assert result == {"ok": False, "msg": "motion already in progress"}
+    finally:
+        arm.motion_release.set()
+        adapter.close()
+
+
+def test_ik_failure_recovers_worker_and_reports_new_error_sequence():
+    """An unreachable target is held safely and does not poison later commands."""
+    arm = RecordingArm()
+    adapter = ArmAdapter(arm, side="left")
+    try:
+        arm.fail_movep = True
+        assert adapter.movep([1.0, 1.0, 1.0])["ok"]
+        assert arm.command_received.wait(timeout=1.0)
+        deadline = time.monotonic() + 1.0
+        state = adapter.get_state_dict()
+        while not state["fault"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+            state = adapter.get_state_dict()
+
+        assert state["fault"] == "IK target unreachable"
+        assert state["error_seq"] == 1
+        assert sum(call[0] == "stop" for call in arm.calls) >= 1
+
+        arm.fail_movep = False
+        arm.command_received.clear()
+        assert adapter.movep([0.42, 0.10, 0.20])["ok"]
+        assert arm.command_received.wait(timeout=1.0)
+        deadline = time.monotonic() + 1.0
+        while adapter.get_state_dict()["fault"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert adapter.get_state_dict()["fault"] == ""
+    finally:
         adapter.close()
 
 

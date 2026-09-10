@@ -9,6 +9,8 @@ Requires pinocchio: pip install pin
 
 import sys
 import os
+import threading
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -23,10 +25,10 @@ except ImportError:
 pytestmark = pytest.mark.skipif(pin is None, reason="pinocchio not installed")
 
 
-def _get_urdf_path():
-    """Resolve URDF path for A1 right arm."""
+def _get_urdf_path(side="r"):
+    """Resolve an A1 URDF path."""
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, "onero_sdk", "urdf", "A1", "a1_r.urdf")
+    return os.path.join(base, "onero_sdk", "urdf", "A1", f"a1_{side}.urdf")
 
 
 @pytest.fixture
@@ -74,6 +76,58 @@ class TestIKConvergence:
         pos_sol, _ = ik_solver.get_ee_pose(q_sol)
         pos_err = np.linalg.norm(pos_sol - pos_target)
         assert pos_err < 1e-3, f"Position-only IK error: {pos_err:.6f}m"
+
+
+class TestArmMotionCleanup:
+    def test_motion_lock_is_released_when_ik_reset_fails(self):
+        """A feedback/reset error must never leave every future motion blocked."""
+        from onero_sdk.arm import Arm
+
+        class FailingIK:
+            def reset(self, _q):
+                raise ValueError("measured joint outside model limits")
+
+        arm = object.__new__(Arm)
+        arm._ik = FailingIK()
+        arm._lock = threading.Lock()
+        arm._motion_lock = threading.Lock()
+        arm._motion_lock.acquire()
+        arm._state = SimpleNamespace(joints=[0.0] * 7)
+
+        with pytest.raises(ValueError, match="outside model limits"):
+            arm._end_motion()
+
+        assert arm._motion_lock.acquire(blocking=False)
+        arm._motion_lock.release()
+
+
+class TestPinkIKRecovery:
+    """Pink IK remains usable after small physical joint-limit overshoot."""
+
+    def test_reset_clamps_small_feedback_overshoot_before_next_solve(self):
+        pytest.importorskip("pink")
+        from onero_sdk.fk import URDFChain
+        from onero_sdk.ik_solver import PinkIKSolver
+
+        urdf = _get_urdf_path("l")
+        solver = PinkIKSolver(urdf_path=urdf, ee_frame="Link7")
+        chain = URDFChain(urdf, ee_link="Link7")
+
+        # MuJoCo/real feedback can overshoot a hard limit by a fraction of a
+        # degree. Pink rejects such a seed before taking any recovery step.
+        q_feedback = np.zeros(7)
+        q_feedback[3] = 1.9208
+        q_inside = q_feedback.copy()
+        q_inside[3] = 1.92 - 1e-6
+        target_pos, target_rot = chain.get_ee_pose(q_inside.tolist())
+
+        solver.reset(q_feedback)
+        q_result = solver.solve(
+            target_pos, target_rot, dt=0.005, max_iter=50, strict=True,
+        )
+
+        assert np.all(np.isfinite(q_result))
+        assert q_result[3] <= 1.92
 
 
 class TestIKWarmStart:

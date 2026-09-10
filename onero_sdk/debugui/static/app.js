@@ -5,8 +5,8 @@
  *   1.  Config & shared state
  *   2.  Three.js scene setup
  *   3.  URDF robot loading  (real mesh + ghost preview)
- *   4.  MoveL target-ball drag
- *   5.  Panel rendering  (MoveJ / Servo / MoveL / Freedrive tabs)
+ *   4.  MoveL / MoveP target gizmo
+ *   5.  Panel rendering  (MoveJ / Servo / MoveL / MoveP / Freedrive tabs)
  *   6.  SSE state stream  (+ polling fallback)
  *   7.  API helpers
  *   8.  Bootstrap
@@ -14,6 +14,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import URDFLoader from '/static/vendor/urdf-loader/URDFLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 
@@ -29,15 +30,38 @@ const CFG = {
   right: { api: '/right/api', model: 'a1_r', shoulderY: -0.18, panel: 'rightPanel', label: '右臂' },
 };
 
+// Humanoid shoulder mounting, base vectors → scene/world vectors.
+// Both arms: base +X points up. Base +Z points outward (+Y left, -Y right).
+const SCENE_R_BASE = {
+  left: new THREE.Matrix4().set(
+    0,  1,  0, 0,
+    0,  0,  1, 0,
+    1,  0,  0, 0,
+    0,  0,  0, 1,
+  ),
+  right: new THREE.Matrix4().set(
+    0, -1,  0, 0,
+    0,  0, -1, 0,
+    1,  0,  0, 0,
+    0,  0,  0, 1,
+  ),
+};
+const BASE_R_SCENE = {
+  left: SCENE_R_BASE.left.clone().transpose(),
+  right: SCENE_R_BASE.right.clone().transpose(),
+};
+
 // Whether the server runs in single-arm mode (served at /api instead of /left|right/api)
 let singleArmSide = null;   // 'left' | 'right' | null (dual)
 
 // Live arm state — updated by SSE
 const armState = {
   left:  { joints: [], limits: null, enabled: false, moving: false, freedrive: false,
-           servo_active: false, end_effector: null, model: 'a1_l', num_joints: 7 },
+           servo_active: false, command_active: false, end_effector: null,
+           model: 'a1_l', num_joints: 7, error_seq: 0 },
   right: { joints: [], limits: null, enabled: false, moving: false, freedrive: false,
-           servo_active: false, end_effector: null, model: 'a1_r', num_joints: 7 },
+           servo_active: false, command_active: false, end_effector: null,
+           model: 'a1_r', num_joints: 7, error_seq: 0 },
 };
 
 // Preview joint values (driven by UI sliders, not hardware)
@@ -135,17 +159,6 @@ resize();
 // 3.  URDF robot loading
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Display transform: operator frame ← URDF frame
- *   op X = URDF Z,  op Y = -URDF Y,  op Z = URDF X
- */
-const ROOT_ROT = new THREE.Matrix4().set(
-  0,  0, 1, 0,
-  0, -1, 0, 0,
-  1,  0, 0, 0,
-  0,  0, 0, 1,
-);
-
 const robots     = { left: null, right: null };
 const ghostGroup = { left: null, right: null };
 const ghostAxes  = { left: [], right: [] };
@@ -190,12 +203,12 @@ function loadRobot(side) {
   const c = CFG[side];
   const group = new THREE.Group();
   group.position.set(0, c.shoulderY, 0);
-  group.rotation.z = side === 'left' ? Math.PI / 2 : -Math.PI / 2;
+  group.setRotationFromMatrix(SCENE_R_BASE[side]);
   scene.add(group);
 
   const gg = new THREE.Group();
   gg.position.copy(group.position);
-  gg.rotation.copy(group.rotation);
+  gg.quaternion.copy(group.quaternion);
   gg.visible = showGhost[side];
   scene.add(gg);
   ghostGroup[side] = gg;
@@ -215,7 +228,6 @@ function loadRobot(side) {
     );
   };
   loader.load(`/assets/urdf/${c.model}.urdf`, robot => {
-    robot.setRotationFromMatrix(ROOT_ROT);
     applyRealMaterial(robot);
     group.add(robot);
     robots[side] = robot;
@@ -277,32 +289,31 @@ function setGhostVisible(side, v) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 4.  MoveL target-ball drag
+// 4.  MoveL / MoveP target gizmo
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Coordinate transforms (URDF base frame ↔ Three.js scene):
- *   scene.x = urdf.z,   scene.y = -urdf.y + shoulderY,   scene.z = urdf.x
- * Inverse (delta):
- *   urdf.dx = scene.dz,  urdf.dy = -scene.dy,  urdf.dz = scene.dx
- */
+/** Convert between arm-base coordinates and the displayed humanoid world. */
 function eeToScene(pos, side) {
   if (!pos || pos.length < 3) return null;
-  return new THREE.Vector3(pos[2], -pos[1] + CFG[side].shoulderY, pos[0]);
+  return new THREE.Vector3(...pos)
+    .applyMatrix4(SCENE_R_BASE[side])
+    .add(new THREE.Vector3(0, CFG[side].shoulderY, 0));
 }
 
-function sceneDeltaToArm(from, to) {
-  const d = to.clone().sub(from);
-  return [d.z, -d.y, d.x];     // [dx, dy, dz] in arm base frame
+function sceneToEe(pos, side) {
+  const base = pos.clone()
+    .sub(new THREE.Vector3(0, CFG[side].shoulderY, 0))
+    .applyMatrix4(BASE_R_SCENE[side]);
+  return [base.x, base.y, base.z];
 }
 
-const BALL_COLORS       = { left: 0x3b82f6, right: 0xf97316 };
-const CARTESIAN_MAX_STEP = 0.025;
+const BALL_COLORS = { left: 0x3b82f6, right: 0xf97316 };
 
-const ballMeshes       = {};
-const eeDotMeshes      = {};
+const ballMeshes        = {};
+const eeDotMeshes       = {};
+const transformControls = {};
 const cartesianBallMode = { left: null, right: null };
-const cartesianTarget   = { left: new THREE.Vector3(), right: new THREE.Vector3() };
+const cartesianDirty    = { left: false, right: false };
 
 for (const s of SIDES) {
   const ball = new THREE.Mesh(
@@ -311,8 +322,31 @@ for (const s of SIDES) {
   );
   ball.userData.side = s;
   ball.visible = false;
+  // The ball shares the arm mounting for display, while TransformControls is
+  // kept in world space so its red/green/blue handles always match the global
+  // X/Y/Z arrows and the motion visible on screen.
+  ball.setRotationFromMatrix(SCENE_R_BASE[s]);
   scene.add(ball);
   ballMeshes[s] = ball;
+
+  const control = new TransformControls(camera, renderer.domElement);
+  control.setMode('translate');
+  control.setSpace('world');
+  control.setSize(0.7);
+  control.setTranslationSnap(0.001);
+  control.enabled = false;
+  control.visible = false;
+  control.addEventListener('dragging-changed', event => {
+    orbitControls.enabled = !event.value;
+    if (!event.value && cartesianDirty[s] && cartesianBallMode[s]) {
+      const mode = cartesianBallMode[s];
+      cartesianDirty[s] = false;
+      sendCartesian(s, mode);
+    }
+  });
+  control.addEventListener('objectChange', () => updateCartesianBallTarget(s));
+  scene.add(control);
+  transformControls[s] = control;
 
   const dot = new THREE.Mesh(
     new THREE.SphereGeometry(0.012, 12, 12),
@@ -345,17 +379,21 @@ function resetCartesianTarget(side, mode) {
 }
 
 function activateCartesianBall(side, mode, active) {
+  const control = transformControls[side];
   cartesianBallMode[side] = active ? mode : null;
+  cartesianDirty[side] = false;
   ballMeshes[side].visible  = active;
   eeDotMeshes[side].visible = active;
+  control.enabled = active;
+  control.visible = active;
   if (active) {
     const ee = armState[side].end_effector;
     const pos = eeToScene(ee ? ee.pos : null, side);
-    if (pos) {
-      ballMeshes[side].position.copy(pos);
-      cartesianTarget[side].copy(pos);
-    }
+    if (pos) ballMeshes[side].position.copy(pos);
     if (ee && ee.pos) setCartesianInputs(side, mode, ee.pos);
+    control.attach(ballMeshes[side]);
+  } else {
+    control.detach();
   }
 }
 
@@ -365,71 +403,17 @@ function updateEeDot(side) {
   if (pos) eeDotMeshes[side].position.copy(pos);
 }
 
-// Drag state
-const raycaster = new THREE.Raycaster();
-const mouse2d   = new THREE.Vector2();
-let   dragState = null;
+function updateCartesianBallTarget(side) {
+  const mode = cartesianBallMode[side];
+  if (!mode) return;
 
-function getNDC(ev) {
-  const r = canvas.getBoundingClientRect();
-  mouse2d.x =  ((ev.clientX - r.left) / r.width)  * 2 - 1;
-  mouse2d.y = -((ev.clientY - r.top)  / r.height) * 2 + 1;
+  // The gizmo represents an absolute Cartesian target. Do not clamp drag
+  // distance in the UI: reachability belongs to IK and URDF joint limits,
+  // while execution speed/acceleration remain bounded by the motion API.
+  const target = sceneToEe(ballMeshes[side].position, side);
+  setCartesianInputs(side, mode, target);
+  cartesianDirty[side] = true;
 }
-
-canvas.addEventListener('pointerdown', ev => {
-  if (ev.button !== 0) return;
-  getNDC(ev);
-  raycaster.setFromCamera(mouse2d, camera);
-  const activeBalls = SIDES.filter(s => cartesianBallMode[s]).map(s => ballMeshes[s]);
-  if (!activeBalls.length) return;
-  const hits = raycaster.intersectObjects(activeBalls);
-  if (!hits.length) return;
-  const side = hits[0].object.userData.side;
-  orbitControls.enabled = false;
-  const plane = new THREE.Plane(new THREE.Vector3(0,0,1), -hits[0].object.position.z);
-  dragState = {
-    side,
-    mode: cartesianBallMode[side],
-    plane,
-    fixedZ: hits[0].object.position.z,
-  };
-  canvas.setPointerCapture(ev.pointerId);
-  ev.stopPropagation();
-});
-
-canvas.addEventListener('pointermove', ev => {
-  if (!dragState) return;
-  getNDC(ev);
-  raycaster.setFromCamera(mouse2d, camera);
-  const pt = new THREE.Vector3();
-  if (!raycaster.ray.intersectPlane(dragState.plane, pt)) return;
-  pt.z = dragState.fixedZ;
-  ballMeshes[dragState.side].position.copy(pt);
-  cartesianTarget[dragState.side].copy(pt);
-
-  // Dragging is preview-only. MoveL and MoveP are blocking trajectory
-  // commands, not streaming servo commands. Update the selected mode's
-  // numeric preview and submit exactly once on pointerup.
-  const ee = armState[dragState.side].end_effector;
-  const cur = eeToScene(ee ? ee.pos : null, dragState.side);
-  if (cur && ee) {
-    const delta = sceneDeltaToArm(cur, cartesianTarget[dragState.side]);
-    setCartesianInputs(
-      dragState.side,
-      dragState.mode,
-      ee.pos.map((v, i) => v + delta[i]),
-    );
-  }
-});
-
-canvas.addEventListener('pointerup', ev => {
-  if (!dragState) return;
-  const { side, mode } = dragState;
-  orbitControls.enabled = true;
-  dragState = null;
-  canvas.releasePointerCapture(ev.pointerId);
-  sendCartesian(side, mode);
-});
 
 function sendCartesian(side, mode) {
   const ee = armState[side].end_effector;
@@ -440,18 +424,20 @@ function sendCartesian(side, mode) {
   }
 
   const delta = target.map((v, i) => v - ee.pos[i]);
-  if (Math.max(...delta.map(Math.abs)) > CARTESIAN_MAX_STEP + 1e-9) {
-    setStatus(side, `${mode}: each axis is limited to 2.5 cm per command`);
-    return;
-  }
-  if (delta.reduce((sum, v) => sum + Math.abs(v), 0) < 0.0005) return;
+  if (delta.reduce((sum, v) => sum + Math.abs(v), 0) < 1e-9) return;
 
   const speedInput = document.getElementById(
     mode === 'movel' ? `${side}_lspeed` : `${side}_pspeed`,
   );
   const speed = speedInput ? Number(speedInput.value) : undefined;
-  api(side, mode, { position: target, speed })
-    .then(d => setStatus(side, `${mode}: ${d.ok ? 'ok' : 'fail'} ${d.msg || ''}`));
+  api(side, mode, { position: target, speed }).then(d => {
+    setStatus(side, `${mode}: ${d.ok ? 'ok' : 'fail'} ${d.msg || ''}`);
+    if (!d.ok && ee && ee.pos) {
+      ballMeshes[side].position.copy(eeToScene(ee.pos, side));
+      setCartesianInputs(side, mode, ee.pos);
+      cartesianDirty[side] = false;
+    }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -541,7 +527,7 @@ function renderPanel(side) {
     <label>speed (m/s)</label>
     <input id="${side}_lspeed" type="number" min="0.02" max="0.5" step="0.01" value="0.1"/>
   </div>
-  <div class="cardInfo">笛卡尔直线路径。拖球只做预览，松手后发送一次；每轴单次最大 2.5 cm。未填写姿态时保持当前姿态。</div>
+  <div class="cardInfo">笛卡尔直线路径。拖动红/绿/蓝箭头控制 X/Y/Z，拖动方块控制对应平面；松手后发送一次。目标可任意拖动，可达性由 IK 与关节限位判断。</div>
   <div class="poseRow" id="${side}_pose_row">EE: --</div>
 </div>
 
@@ -562,7 +548,7 @@ function renderPanel(side) {
     <label>speed (rad/s)</label>
     <input id="${side}_pspeed" type="number" min="0.05" max="5" step="0.05" value="0.5"/>
   </div>
-  <div class="cardInfo">点到点笛卡尔运动：先解目标 IK，再执行关节插值；路径不保证直线。每轴单次最大 2.5 cm。</div>
+  <div class="cardInfo">拖动红/绿/蓝箭头控制 X/Y/Z，松手后执行点到点运动；路径不保证直线，可达性由 IK 与关节限位判断。</div>
   <div class="poseRow" id="${side}_movep_pose">EE: --</div>
 </div>
 
@@ -797,15 +783,34 @@ let sseActive = false;
 function applyState(side, data) {
   const s = armState[side];
   if (data.joints && data.joints.length > 0) {
+    const nextErrorSeq = Number(data.error_seq || 0);
+    const hasNewError = nextErrorSeq > s.error_seq;
     s.joints        = data.joints;
     s.limits        = data.limits || s.limits;
     s.enabled       = data.enabled;
     s.moving        = data.moving;
     s.freedrive     = data.freedrive;
     s.servo_active  = data.servo_active;
+    s.command_active = Boolean(data.command_active);
     s.end_effector  = data.pose || null;
     s.model         = data.model || s.model;
     s.num_joints    = data.num_joints || s.num_joints;
+    s.error_seq     = nextErrorSeq;
+
+    // An unreachable target leaves the arm at its measured pose. Snap the
+    // gizmo back once so the next drag starts from reality rather than from
+    // the failed target; do not keep snapping while the user retries.
+    const control = transformControls[side];
+    if (control && cartesianBallMode[side] && !control.dragging) {
+      control.enabled = !s.command_active;
+    }
+    if (hasNewError && cartesianBallMode[side] && control && !control.dragging && data.pose) {
+      const mode = cartesianBallMode[side];
+      ballMeshes[side].position.copy(eeToScene(data.pose.pos, side));
+      setCartesianInputs(side, mode, data.pose.pos);
+      cartesianDirty[side] = false;
+    }
+
     updateRobot(side);
     if (!previewLocked[side]) syncSlidersToState(side, data.joints);
     updateOverlay(side, data);

@@ -53,20 +53,33 @@ def main() -> None:
         sys.exit(1)
 
     if args.sim:
-        # Simulation backend
+        # Simulation backend. Keep joint/rate limits, but disable the hardware
+        # tracking-error watchdog: MuJoCo's simple PD plant can legitimately
+        # lag a long point-to-point IK move and must not enter a latched
+        # hardware emergency-stop state during UI exploration.
         from onero_sdk.mujoco_backend import MujocoBackend
+        from onero_sdk.safety import SafetyConfig
+        sim_safety = SafetyConfig(
+            tracking_error_hard_threshold=0.0,
+            tracking_error_soft_threshold=0.0,
+        )
         if args.arm == "both":
             from onero_sdk import DualArm
             dual = DualArm.create(
                 left_backend=MujocoBackend(model_name="A1L"),
                 right_backend=MujocoBackend(model_name="A1R"),
                 arm_spacing=args.arm_spacing,
+                safety=sim_safety,
             )
             dual.enable()
             start_lab_dual(dual, host=args.host, port=args.port, block=True)
         else:
             model = "A1R" if args.arm == "right" else "A1L"
-            arm = Arm(model, backend=MujocoBackend(model_name=model))
+            arm = Arm(
+                model,
+                backend=MujocoBackend(model_name=model),
+                safety=sim_safety,
+            )
             arm.enable()
             start_lab(arm, side=args.arm, host=args.host, port=args.port, block=True)
     else:

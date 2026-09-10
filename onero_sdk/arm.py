@@ -910,11 +910,14 @@ class Arm(ArmTransformsMixin):
                 fixed_kd=kd if not use_adaptive else None,
             )
 
-            self._state = self._executor.run(
-                cartesian_linear_frames(ctx, start_pos_ee, start_rot_ee,
-                                        target_pos, target_rot, ik,
-                                        geometry.slerp_matrix)
-            )
+            # Solve the complete Cartesian path before commanding hardware.
+            # A lazy generator could move through many waypoints and then fail
+            # IK near the endpoint, leaving the arm in an unexpected partial
+            # pose. Preflight makes an unreachable path fail without motion.
+            frames = list(cartesian_linear_frames(
+                ctx, start_pos_ee, start_rot_ee, target_pos, target_rot, ik,
+                geometry.slerp_matrix))
+            self._state = self._executor.run(frames)
 
             return self._state
         finally:
@@ -1043,11 +1046,12 @@ class Arm(ArmTransformsMixin):
                 fixed_kd=kd if not use_adaptive else None,
             )
 
-            self._state = self._executor.run(
-                circular_arc_frames(ctx, center, v0, normal, total_angle,
-                                    r0, r1, r2, ik, geometry.slerp_matrix,
-                                    geometry.rotate_vector)
-            )
+            # Preflight all IK waypoints before sending the first command; see
+            # movel() for the partial-motion failure rationale.
+            frames = list(circular_arc_frames(
+                ctx, center, v0, normal, total_angle, r0, r1, r2, ik,
+                geometry.slerp_matrix, geometry.rotate_vector))
+            self._state = self._executor.run(frames)
             return self._state
         finally:
             self._end_motion()
@@ -2459,15 +2463,20 @@ class Arm(ArmTransformsMixin):
         self._check_auto_payload()
 
     def _end_motion(self) -> None:
-        """Release motion lock after motion completes."""
-        if self._ik is not None:
-            with self._lock:
-                q = list(self._state.joints)
-            self._ik.reset(np.array(q))
+        """Reset IK state and always release the motion lock."""
         try:
-            self._motion_lock.release()
-        except RuntimeError:
-            pass
+            if self._ik is not None:
+                with self._lock:
+                    q = list(self._state.joints)
+                self._ik.reset(np.array(q))
+        finally:
+            # IK reset validates measured feedback and is allowed to raise.
+            # Never let that validation error strand the motion lock: stop()
+            # and every later motion would otherwise block forever.
+            try:
+                self._motion_lock.release()
+            except RuntimeError:
+                pass
 
     @staticmethod
     def _duration_from_speed(distance: float, speed: float,

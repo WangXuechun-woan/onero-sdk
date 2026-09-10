@@ -133,17 +133,17 @@ start_lab(arm, port=8090, block=True)
 - **kp / kd**：增益参数，直接传入 `arm.servoj(kp=…, kd=…)`
 - 伺服激活后拖动滑条实时更新目标，绿点脉冲表示循环运行中
 
-> ⚠️ 伺服模式与 MoveJ / MoveL / MoveP / Home 互斥。服务端在接收阻塞运动前会先停止 Servo，避免两个线程同时向后端发送命令。
+> ⚠️ 伺服模式与 MoveJ / MoveL / MoveP / Home 互斥。阻塞运动执行期间，新运动请求会返回 `motion already in progress`，不会通过急停路径取消当前轨迹；需要中止时请显式点击 **Stop**。
 
 #### MoveL 标签页
 
 笛卡尔直线运动，对应 `arm.movel(position, speed=…)`。
 
 - 可直接输入目标 X/Y/Z，或点击 **Current** 填入当前末端位置
-- **Drag Ball**：在 3D 视口中显示末端控制球；拖动过程只预览，松手后发送一次 MoveL
+- **Drag Ball**：显示世界坐标三轴操纵器；红/绿/蓝箭头分别对应 world X/Y/Z，并与场景原点三轴保持一致；平面手柄控制 XY/XZ/YZ；拖动只预览，松手后发送一次 MoveL
 - **Apply**：提交一次完整直线运动，不会在拖动期间反复取消和重启轨迹
 - **Stop**：停止当前运动并隐藏控制球
-- 每个坐标轴单次最大变化 2.5 cm
+- 目标位置可任意拖动或输入；可达性由 IK 和 URDF 关节限位判断
 - 未指定姿态时保持命令开始前的当前姿态
 - **speed**：工具速度（m/s）
 
@@ -152,10 +152,10 @@ start_lab(arm, port=8090, block=True)
 笛卡尔点到点运动，对应 `arm.movep(position, speed=…)`。
 
 - 输入目标 X/Y/Z，或点击 **Current** 填入当前末端位置
-- **Drag Ball**：与 MoveL 一样可拖动末端球预览目标，松手后发送一次 MoveP
+- **Drag Ball**：与 MoveL 一样使用 XYZ 三轴及平面手柄预览目标，松手后发送一次 MoveP
 - **Apply**：目标位姿先解 IK，再执行关节空间插值
 - 路径不保证为直线；需要直线路径时使用 MoveL
-- 每个坐标轴单次最大变化 2.5 cm
+- 目标位置可任意拖动或输入；可达性由 IK 和 URDF 关节限位判断
 - 未指定姿态时保持命令开始前的当前姿态
 - **speed**：关节速度（rad/s）
 
@@ -267,7 +267,7 @@ python -m onero_sdk.debugui --arm both --sim --port 8090
 open http://localhost:8090
 ```
 
-仿真模式下 MuJoCo 提供完整物理仿真，所有 UI 功能均可正常使用。
+仿真模式下 MuJoCo 提供物理仿真，所有 UI 功能均可使用。仿真仍执行关节限位、速度和单步变化限制，但关闭面向真机通信/堵转场景的 tracking-error 急停锁存，避免简化 PD 模型的正常跟踪滞后被误判为硬件故障；真机模式保持完整急停监控。
 
 ---
 

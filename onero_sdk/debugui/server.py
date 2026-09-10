@@ -120,6 +120,7 @@ class ArmAdapter:
         self._cmd: Optional[dict] = None
         self._cmd_event = threading.Event()
         self._worker_alive = True
+        self._command_active = False
         self._worker = threading.Thread(
             target=self._worker_loop, daemon=True, name=f"debugui-worker-{side}")
         self._worker.start()
@@ -141,6 +142,7 @@ class ArmAdapter:
         self._last_quat: List[float] = [0.0, 0.0, 0.0, 1.0]
         self._last_msg: str = "ready"
         self._last_fault: str = ""
+        self._error_seq: int = 0
 
     # ------------------------------------------------------------------
     # Worker thread (blocking motions: movej, movel, home)
@@ -154,12 +156,28 @@ class ArmAdapter:
                 self._cmd = None
             if cmd is None or not self._worker_alive:
                 continue
+            command_error = None
             try:
                 self._run_cmd(cmd)
             except Exception as exc:
-                self._last_fault = str(exc)
-                self._last_msg = f"error: {exc}"
+                command_error = exc
+                # A failed Cartesian solve must leave the backend in a known
+                # hold state and refresh measured pose. The worker remains
+                # alive so the next corrected target can run immediately.
+                try:
+                    self._update_state(self._arm.stop())
+                except Exception:
+                    self._refresh_state()
                 logger.warning("[debugui %s] cmd error: %s", self.side, exc)
+            finally:
+                with self._lock:
+                    self._command_active = False
+                # Publish the fault only after the worker slot is available,
+                # so an SSE client can correct and retry as soon as it sees it.
+                if command_error is not None:
+                    self._last_fault = str(command_error)
+                    self._last_msg = f"error: {command_error}"
+                    self._error_seq += 1
 
     def _run_cmd(self, cmd: dict) -> None:
         name = cmd["name"]
@@ -192,24 +210,27 @@ class ArmAdapter:
             self._update_state(state)
             self._last_msg = "home done"
 
-    def _dispatch(self, cmd: dict) -> None:
-        """Enter blocking-motion mode exclusively, then queue the command."""
-        # Blocking motions and the 100 Hz servo loop must never command the
-        # backend concurrently.  Stop real-time modes before touching the
-        # blocking worker queue.
+    def _dispatch(self, cmd: dict) -> bool:
+        """Queue one blocking motion without interrupting an active one."""
+        # Reserve the single worker slot atomically. Calling Arm.stop() merely
+        # to replace an in-flight command uses the emergency-stop path and can
+        # leave safety latched when HTTP requests race, so busy requests are
+        # rejected instead.
+        with self._lock:
+            if self._command_active or self._cmd is not None:
+                return False
+            self._command_active = True
+            self._cmd = cmd
+
+        # Blocking motions and real-time modes are mutually exclusive.
         self.servo_stop()
         try:
             if self._arm.is_freedrive:
                 self._arm.freedrive_disable()
         except Exception:
             pass
-        try:
-            self._arm.stop()
-        except Exception:
-            pass
-        with self._lock:
-            self._cmd = cmd
         self._cmd_event.set()
+        return True
 
     # ------------------------------------------------------------------
     # State helpers
@@ -267,8 +288,10 @@ class ArmAdapter:
             },
             "limits": [[float(lo), float(hi)] for lo, hi in limits],
             "servo_active": self._servo_active,
+            "command_active": self._command_active,
             "msg": self._last_msg,
             "fault": self._last_fault,
+            "error_seq": self._error_seq,
         }
 
     # ------------------------------------------------------------------
@@ -307,7 +330,8 @@ class ArmAdapter:
             return {"ok": False, "msg": str(exc)}
 
     def home(self) -> dict:
-        self._dispatch({"name": "home"})
+        if not self._dispatch({"name": "home"}):
+            return {"ok": False, "msg": "motion already in progress"}
         return {"ok": True, "msg": "homing queued"}
 
     def set_stiffness(self, stiffness: str) -> dict:
@@ -326,8 +350,9 @@ class ArmAdapter:
         n = self._arm.num_joints
         if len(joints) != n:
             return {"ok": False, "msg": f"expected {n} joints, got {len(joints)}"}
-        self._dispatch({"name": "movej", "joints": joints,
-                        "speed": speed, "duration": duration})
+        if not self._dispatch({"name": "movej", "joints": joints,
+                               "speed": speed, "duration": duration}):
+            return {"ok": False, "msg": "motion already in progress"}
         return {"ok": True, "msg": "movej queued"}
 
     def movel(self, position: list, rotation=None,
@@ -335,8 +360,10 @@ class ArmAdapter:
               duration: Optional[float] = None) -> dict:
         if len(position) not in (3, 6):
             return {"ok": False, "msg": "position must be [x,y,z] or [x,y,z,rx,ry,rz]"}
-        self._dispatch({"name": "movel", "position": position,
-                        "rotation": rotation, "speed": speed, "duration": duration})
+        if not self._dispatch({"name": "movel", "position": position,
+                               "rotation": rotation, "speed": speed,
+                               "duration": duration}):
+            return {"ok": False, "msg": "motion already in progress"}
         return {"ok": True, "msg": "movel queued"}
 
     def movep(self, position: list, rotation=None,
@@ -344,8 +371,10 @@ class ArmAdapter:
               duration: Optional[float] = None) -> dict:
         if len(position) not in (3, 6):
             return {"ok": False, "msg": "position must be [x,y,z] or [x,y,z,rx,ry,rz]"}
-        self._dispatch({"name": "movep", "position": position,
-                        "rotation": rotation, "speed": speed, "duration": duration})
+        if not self._dispatch({"name": "movep", "position": position,
+                               "rotation": rotation, "speed": speed,
+                               "duration": duration}):
+            return {"ok": False, "msg": "motion already in progress"}
         return {"ok": True, "msg": "movep queued"}
 
     # ------------------------------------------------------------------
@@ -355,6 +384,9 @@ class ArmAdapter:
                     kd: Optional[float] = None) -> dict:
         if self._servo_active:
             return {"ok": True, "msg": "servo already active"}
+        with self._lock:
+            if self._command_active or self._cmd is not None:
+                return {"ok": False, "msg": "motion already in progress"}
         if not self._arm.enabled:
             return {"ok": False, "msg": "arm not enabled"}
         # Stop any blocking motion first
@@ -433,6 +465,9 @@ class ArmAdapter:
     def freedrive_start(self, damping: float = 0.5) -> dict:
         if not self._arm.enabled:
             return {"ok": False, "msg": "arm not enabled"}
+        with self._lock:
+            if self._command_active or self._cmd is not None:
+                return {"ok": False, "msg": "motion already in progress"}
         self.servo_stop()
         try:
             self._arm.freedrive_enable(damping=damping)
