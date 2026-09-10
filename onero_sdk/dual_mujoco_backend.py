@@ -136,13 +136,17 @@ class DualMujocoBackend:
             rgba=[0.75, 0.65, 0.55, 1.0],
         )
 
-        # Shoulder attachment sites (bases face outward like human shoulders)
-        # Right base faces -Y (outward right), left base faces +Y (outward left)
-        # Opposite joint signs produce symmetric mirror motion (L = -R)
+        # Vertical shoulder mounting: base +X points up for BOTH arms, so the
+        # URDF zero pose (which extends mainly along base -X) hangs downward.
+        # A1L/A1R already contain the left/right kinematic mirroring.  Mirror
+        # the shoulder mounts by 180 degrees about world Z, not by flipping
+        # base +X: both +X axes stay up while each base +Z points outward.
+        # Using [-90, 0, 90] for the left site points base +X down and
+        # mirrors the vertical mounting a second time, making the arm rise.
         r_site = torso.add_site(name='r_shoulder', pos=[0, -0.12, 0.22],
                                 euler=[90, 0, 90])
         l_site = torso.add_site(name='l_shoulder', pos=[0, 0.12, 0.22],
-                                euler=[-90, 0, 90])
+                                euler=[-90, 0, -90])
 
         # Load and attach arms
         r_arm_spec = mujoco.MjSpec.from_file(r_urdf)

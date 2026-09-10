@@ -133,16 +133,31 @@ start_lab(arm, port=8090, block=True)
 - **kp / kd**：增益参数，直接传入 `arm.servoj(kp=…, kd=…)`
 - 伺服激活后拖动滑条实时更新目标，绿点脉冲表示循环运行中
 
-> ⚠️ 伺服模式下请勿同时使用 MoveJ / MoveL，避免指令冲突。
+> ⚠️ 伺服模式与 MoveJ / MoveL / MoveP / Home 互斥。服务端在接收阻塞运动前会先停止 Servo，避免两个线程同时向后端发送命令。
 
 #### MoveL 标签页
 
 笛卡尔直线运动，对应 `arm.movel(position, speed=…)`。
 
-- **Activate Ball**：在 3D 视口中显示末端控制球
-- 拖动球 → 5 Hz 频率向后端发送 `movel` 命令，每次最大步长 2.5 cm
-- **Stop**：隐藏控制球
+- 可直接输入目标 X/Y/Z，或点击 **Current** 填入当前末端位置
+- **Drag Ball**：在 3D 视口中显示末端控制球；拖动过程只预览，松手后发送一次 MoveL
+- **Apply**：提交一次完整直线运动，不会在拖动期间反复取消和重启轨迹
+- **Stop**：停止当前运动并隐藏控制球
+- 每个坐标轴单次最大变化 2.5 cm
+- 未指定姿态时保持命令开始前的当前姿态
 - **speed**：工具速度（m/s）
+
+#### MoveP 标签页
+
+笛卡尔点到点运动，对应 `arm.movep(position, speed=…)`。
+
+- 输入目标 X/Y/Z，或点击 **Current** 填入当前末端位置
+- **Drag Ball**：与 MoveL 一样可拖动末端球预览目标，松手后发送一次 MoveP
+- **Apply**：目标位姿先解 IK，再执行关节空间插值
+- 路径不保证为直线；需要直线路径时使用 MoveL
+- 每个坐标轴单次最大变化 2.5 cm
+- 未指定姿态时保持命令开始前的当前姿态
+- **speed**：关节速度（rad/s）
 
 #### Freedrive 标签页
 
@@ -181,6 +196,7 @@ Debug UI 暴露了完整的 REST API，可从其他工具调用：
 | `POST` | `/api/set_stiffness` | `{"stiffness":"stiff"}` | 刚度预设 |
 | `POST` | `/api/movej` | `{"joints":[…],"speed":0.5}` | 关节运动 |
 | `POST` | `/api/movel` | `{"position":[x,y,z],"speed":0.1}` | 末端直线运动 |
+| `POST` | `/api/movep` | `{"position":[x,y,z],"speed":0.5}` | 末端点到点运动 |
 | `POST` | `/api/servo/start` | `{"kp":50,"kd":1.0}` | 启动 100 Hz 伺服 |
 | `POST` | `/api/servo/target` | `{"joints":[…],"velocities":[…]}` | 更新伺服目标 |
 | `POST` | `/api/servo/stop` | — | 停止伺服 |

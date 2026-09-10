@@ -29,6 +29,7 @@ LabServer
       POST /[<side>/]api/set_stiffness   {"stiffness": "stiff"|"medium"|"soft"}
       POST /[<side>/]api/movej            {"joints":[…], "speed":0.5}
       POST /[<side>/]api/movel            {"position":[x,y,z], "rotation":[…], "speed":0.1}
+      POST /[<side>/]api/movep            {"position":[x,y,z], "rotation":[…], "speed":0.5}
       POST /[<side>/]api/servo/start      {"kp":50, "kd":1.0}
       POST /[<side>/]api/servo/target     {"joints":[…], "velocities":[…]}
       POST /[<side>/]api/servo/stop
@@ -171,18 +172,19 @@ class ArmAdapter:
                               duration=cmd.get("duration"))
             self._update_state(state)
             self._last_msg = "movej done"
-        elif name == "movel":
-            self._last_msg = "movel running…"
+        elif name in ("movel", "movep"):
+            self._last_msg = f"{name} running…"
             self._last_fault = ""
             rotation = cmd.get("rotation")
             if rotation is None and len(cmd["position"]) == 3:
                 _, rotation = arm.get_pose()
-            state = arm.movel(cmd["position"],
-                              rotation=rotation,
-                              speed=cmd.get("speed"),
-                              duration=cmd.get("duration"))
+            motion = arm.movel if name == "movel" else arm.movep
+            state = motion(cmd["position"],
+                           rotation=rotation,
+                           speed=cmd.get("speed"),
+                           duration=cmd.get("duration"))
             self._update_state(state)
-            self._last_msg = "movel done"
+            self._last_msg = f"{name} done"
         elif name == "home":
             self._last_msg = "homing…"
             self._last_fault = ""
@@ -191,7 +193,16 @@ class ArmAdapter:
             self._last_msg = "home done"
 
     def _dispatch(self, cmd: dict) -> None:
-        """Cancel any running motion and queue a new one."""
+        """Enter blocking-motion mode exclusively, then queue the command."""
+        # Blocking motions and the 100 Hz servo loop must never command the
+        # backend concurrently.  Stop real-time modes before touching the
+        # blocking worker queue.
+        self.servo_stop()
+        try:
+            if self._arm.is_freedrive:
+                self._arm.freedrive_disable()
+        except Exception:
+            pass
         try:
             self._arm.stop()
         except Exception:
@@ -327,6 +338,15 @@ class ArmAdapter:
         self._dispatch({"name": "movel", "position": position,
                         "rotation": rotation, "speed": speed, "duration": duration})
         return {"ok": True, "msg": "movel queued"}
+
+    def movep(self, position: list, rotation=None,
+              speed: Optional[float] = None,
+              duration: Optional[float] = None) -> dict:
+        if len(position) not in (3, 6):
+            return {"ok": False, "msg": "position must be [x,y,z] or [x,y,z,rx,ry,rz]"}
+        self._dispatch({"name": "movep", "position": position,
+                        "rotation": rotation, "speed": speed, "duration": duration})
+        return {"ok": True, "msg": "movep queued"}
 
     # ------------------------------------------------------------------
     # Servo loop (servoj 100 Hz)
@@ -665,6 +685,11 @@ class _LabHandler(BaseHTTPRequestHandler):
                                          speed=body.get("speed"),
                                          duration=body.get("duration")),
             "/api/movel":            lambda: adapter.movel(
+                                         body.get("position", []),
+                                         rotation=body.get("rotation"),
+                                         speed=body.get("speed"),
+                                         duration=body.get("duration")),
+            "/api/movep":            lambda: adapter.movep(
                                          body.get("position", []),
                                          rotation=body.get("rotation"),
                                          speed=body.get("speed"),

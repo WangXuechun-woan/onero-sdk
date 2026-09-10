@@ -122,6 +122,20 @@ class TestMovelStraightLine:
         )
 
 
+class TestMovep:
+    """movep reaches a Cartesian endpoint through joint interpolation."""
+
+    def test_movep_reaches_target_position(self, arm):
+        pos_start, rot_start = arm.get_pose()
+        target_pos = pos_start + np.array([0.0, 0.02, 0.0])
+
+        arm.movep(position=target_pos, rotation=rot_start, duration=1.5)
+        pos_end, _ = arm.get_pose()
+
+        err = np.linalg.norm(pos_end - target_pos)
+        assert err < 0.005, f"movep position error: {err*1000:.1f}mm (>5mm)"
+
+
 class TestMovec:
     """movec circular arc correctness."""
 

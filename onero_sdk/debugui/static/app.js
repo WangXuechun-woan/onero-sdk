@@ -296,16 +296,13 @@ function sceneDeltaToArm(from, to) {
   return [d.z, -d.y, d.x];     // [dx, dy, dz] in arm base frame
 }
 
-const BALL_COLORS    = { left: 0x3b82f6, right: 0xf97316 };
-const MOVEL_HZ       = 2;
-const MOVEL_MAX_STEP = 0.025;
+const BALL_COLORS       = { left: 0x3b82f6, right: 0xf97316 };
+const CARTESIAN_MAX_STEP = 0.025;
 
-const ballMeshes  = {};
-const eeDotMeshes = {};
-const movelActive = { left: false, right: false };
-const movelTarget = { left: new THREE.Vector3(), right: new THREE.Vector3() };
-const movelThrottleT = { left: 0, right: 0 };
-const movelSpeed     = { left: 0.1, right: 0.1 };
+const ballMeshes       = {};
+const eeDotMeshes      = {};
+const cartesianBallMode = { left: null, right: null };
+const cartesianTarget   = { left: new THREE.Vector3(), right: new THREE.Vector3() };
 
 for (const s of SIDES) {
   const ball = new THREE.Mesh(
@@ -326,16 +323,39 @@ for (const s of SIDES) {
   eeDotMeshes[s] = dot;
 }
 
-function activateMoveL(side, active) {
-  movelActive[side] = active;
+function setCartesianInputs(side, mode, pos) {
+  if (!pos || pos.length < 3) return;
+  ['x', 'y', 'z'].forEach((axis, i) => {
+    const input = document.getElementById(`${side}_${mode}_${axis}`);
+    if (input) input.value = Number(pos[i]).toFixed(4);
+  });
+}
+
+function currentCartesianTarget(side, mode) {
+  const values = ['x', 'y', 'z'].map(axis => {
+    const input = document.getElementById(`${side}_${mode}_${axis}`);
+    return input ? Number(input.value) : NaN;
+  });
+  return values.every(Number.isFinite) ? values : null;
+}
+
+function resetCartesianTarget(side, mode) {
+  const ee = armState[side].end_effector;
+  if (ee && ee.pos) setCartesianInputs(side, mode, ee.pos);
+}
+
+function activateCartesianBall(side, mode, active) {
+  cartesianBallMode[side] = active ? mode : null;
   ballMeshes[side].visible  = active;
   eeDotMeshes[side].visible = active;
   if (active) {
     const ee = armState[side].end_effector;
     const pos = eeToScene(ee ? ee.pos : null, side);
-    if (pos) { ballMeshes[side].position.copy(pos); movelTarget[side].copy(pos); }
-    const sp = document.getElementById(`${side}_lspeed`);
-    if (sp) movelSpeed[side] = parseFloat(sp.value) || 0.1;
+    if (pos) {
+      ballMeshes[side].position.copy(pos);
+      cartesianTarget[side].copy(pos);
+    }
+    if (ee && ee.pos) setCartesianInputs(side, mode, ee.pos);
   }
 }
 
@@ -360,14 +380,19 @@ canvas.addEventListener('pointerdown', ev => {
   if (ev.button !== 0) return;
   getNDC(ev);
   raycaster.setFromCamera(mouse2d, camera);
-  const activeBalls = SIDES.filter(s => movelActive[s]).map(s => ballMeshes[s]);
+  const activeBalls = SIDES.filter(s => cartesianBallMode[s]).map(s => ballMeshes[s]);
   if (!activeBalls.length) return;
   const hits = raycaster.intersectObjects(activeBalls);
   if (!hits.length) return;
   const side = hits[0].object.userData.side;
   orbitControls.enabled = false;
   const plane = new THREE.Plane(new THREE.Vector3(0,0,1), -hits[0].object.position.z);
-  dragState = { side, plane, fixedZ: hits[0].object.position.z };
+  dragState = {
+    side,
+    mode: cartesianBallMode[side],
+    plane,
+    fixedZ: hits[0].object.position.z,
+  };
   canvas.setPointerCapture(ev.pointerId);
   ev.stopPropagation();
 });
@@ -380,37 +405,53 @@ canvas.addEventListener('pointermove', ev => {
   if (!raycaster.ray.intersectPlane(dragState.plane, pt)) return;
   pt.z = dragState.fixedZ;
   ballMeshes[dragState.side].position.copy(pt);
-  movelTarget[dragState.side].copy(pt);
-  dispatchMovel(dragState.side);
+  cartesianTarget[dragState.side].copy(pt);
+
+  // Dragging is preview-only. MoveL and MoveP are blocking trajectory
+  // commands, not streaming servo commands. Update the selected mode's
+  // numeric preview and submit exactly once on pointerup.
+  const ee = armState[dragState.side].end_effector;
+  const cur = eeToScene(ee ? ee.pos : null, dragState.side);
+  if (cur && ee) {
+    const delta = sceneDeltaToArm(cur, cartesianTarget[dragState.side]);
+    setCartesianInputs(
+      dragState.side,
+      dragState.mode,
+      ee.pos.map((v, i) => v + delta[i]),
+    );
+  }
 });
 
 canvas.addEventListener('pointerup', ev => {
   if (!dragState) return;
+  const { side, mode } = dragState;
   orbitControls.enabled = true;
   dragState = null;
   canvas.releasePointerCapture(ev.pointerId);
+  sendCartesian(side, mode);
 });
 
-function dispatchMovel(side) {
-  const now = Date.now();
-  if (now - movelThrottleT[side] < 1000 / MOVEL_HZ) return;
-  movelThrottleT[side] = now;
-
+function sendCartesian(side, mode) {
   const ee = armState[side].end_effector;
-  const cur = eeToScene(ee ? ee.pos : null, side);
-  if (!cur) return;
+  const target = currentCartesianTarget(side, mode);
+  if (!ee || !ee.pos || !target) {
+    setStatus(side, `${mode}: invalid target`);
+    return;
+  }
 
-  const [dx, dy, dz] = sceneDeltaToArm(cur, movelTarget[side]);
-  const clamp = v => Math.max(-MOVEL_MAX_STEP, Math.min(MOVEL_MAX_STEP, v));
-  const cdx = clamp(dx), cdy = clamp(dy), cdz = clamp(dz);
-  if (Math.abs(cdx) + Math.abs(cdy) + Math.abs(cdz) < 0.001) return;
+  const delta = target.map((v, i) => v - ee.pos[i]);
+  if (Math.max(...delta.map(Math.abs)) > CARTESIAN_MAX_STEP + 1e-9) {
+    setStatus(side, `${mode}: each axis is limited to 2.5 cm per command`);
+    return;
+  }
+  if (delta.reduce((sum, v) => sum + Math.abs(v), 0) < 0.0005) return;
 
-  // Send as tool-frame displacement: current pos + delta
-  const curPos = ee ? ee.pos.slice() : [0, 0, 0];
-  const target = [curPos[0] + cdx, curPos[1] + cdy, curPos[2] + cdz];
-
-  api(side, 'movel', { position: target, speed: movelSpeed[side] })
-    .then(d => setStatus(side, `movel: ${d.ok ? 'ok' : 'fail'} ${d.msg || ''}`));
+  const speedInput = document.getElementById(
+    mode === 'movel' ? `${side}_lspeed` : `${side}_pspeed`,
+  );
+  const speed = speedInput ? Number(speedInput.value) : undefined;
+  api(side, mode, { position: target, speed })
+    .then(d => setStatus(side, `${mode}: ${d.ok ? 'ok' : 'fail'} ${d.msg || ''}`));
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -448,6 +489,7 @@ function renderPanel(side) {
   <button class="modeTab active" data-mode="movej">MoveJ</button>
   <button class="modeTab" data-mode="servo">Servo</button>
   <button class="modeTab" data-mode="movel">MoveL</button>
+  <button class="modeTab" data-mode="movep">MoveP</button>
   <button class="modeTab" data-mode="freedrive">Freedrive</button>
 </div>
 
@@ -455,7 +497,7 @@ function renderPanel(side) {
 <div class="modeCard active" id="${side}_card_movej">
   <div class="cardToolbar">
     <button class="btn" id="${side}_mj_app">Apply</button>
-    <label style="font-size:12px"><input id="${side}_mj_auto" type="checkbox" checked/> Auto</label>
+    <label style="font-size:12px"><input id="${side}_mj_auto" type="checkbox"/> Auto</label>
     <label style="font-size:12px;margin-left:4px"><input id="${side}_mj_ghost" type="checkbox" checked/> Ghost</label>
     <span style="margin-left:auto;font-size:11px;color:#6b7a91">speed(rad/s)</span>
     <input id="${side}_mj_speed" class="speed" type="number" min="0.05" max="5" step="0.05" value="0.5"/>
@@ -485,13 +527,43 @@ function renderPanel(side) {
 <!-- MoveL -->
 <div class="modeCard" id="${side}_card_movel">
   <div class="cardToolbar">
-    <button class="btn ok"   id="${side}_lv_act">Activate Ball</button>
+    <button class="btn ok" id="${side}_lv_act">Drag Ball</button>
+    <button class="btn" id="${side}_lv_current">Current</button>
+    <button class="btn ok" id="${side}_lv_apply">Apply</button>
     <button class="btn warn" id="${side}_lv_deact">Stop</button>
-    <span style="margin-left:auto;font-size:11px;color:#6b7a91">speed(m/s)</span>
-    <input id="${side}_lspeed" class="speed" type="number" min="0.02" max="0.5" step="0.01" value="0.1"/>
   </div>
-  <div class="cardInfo">拖动 3D 视口中的彩色球 → 末端按 5Hz 跟踪（最大 2.5 cm/帧）。</div>
+  <div class="gainRow">
+    <label>X</label><input id="${side}_movel_x" type="number" step="0.001"/>
+    <label>Y</label><input id="${side}_movel_y" type="number" step="0.001"/>
+    <label>Z</label><input id="${side}_movel_z" type="number" step="0.001"/>
+  </div>
+  <div class="gainRow">
+    <label>speed (m/s)</label>
+    <input id="${side}_lspeed" type="number" min="0.02" max="0.5" step="0.01" value="0.1"/>
+  </div>
+  <div class="cardInfo">笛卡尔直线路径。拖球只做预览，松手后发送一次；每轴单次最大 2.5 cm。未填写姿态时保持当前姿态。</div>
   <div class="poseRow" id="${side}_pose_row">EE: --</div>
+</div>
+
+<!-- MoveP -->
+<div class="modeCard" id="${side}_card_movep">
+  <div class="cardToolbar">
+    <button class="btn ok" id="${side}_pv_act">Drag Ball</button>
+    <button class="btn" id="${side}_pv_current">Current</button>
+    <button class="btn ok" id="${side}_pv_apply">Apply</button>
+    <button class="btn warn" id="${side}_pv_stop">Stop</button>
+  </div>
+  <div class="gainRow">
+    <label>X</label><input id="${side}_movep_x" type="number" step="0.001"/>
+    <label>Y</label><input id="${side}_movep_y" type="number" step="0.001"/>
+    <label>Z</label><input id="${side}_movep_z" type="number" step="0.001"/>
+  </div>
+  <div class="gainRow">
+    <label>speed (rad/s)</label>
+    <input id="${side}_pspeed" type="number" min="0.05" max="5" step="0.05" value="0.5"/>
+  </div>
+  <div class="cardInfo">点到点笛卡尔运动：先解目标 IK，再执行关节插值；路径不保证直线。每轴单次最大 2.5 cm。</div>
+  <div class="poseRow" id="${side}_movep_pose">EE: --</div>
 </div>
 
 <!-- Freedrive -->
@@ -538,8 +610,12 @@ function renderPanel(side) {
       btn.classList.add('active');
       const mode = btn.dataset.mode;
       panel.querySelector(`#${side}_card_${mode}`).classList.add('active');
-      // Deactivate MoveL ball when leaving that tab
-      if (mode !== 'movel') activateMoveL(side, false);
+      // Deactivate the Cartesian target ball when leaving its active mode and
+      // initialize targets from the latest measured pose, not stale UI values.
+      if (cartesianBallMode[side] && cartesianBallMode[side] !== mode) {
+        activateCartesianBall(side, cartesianBallMode[side], false);
+      }
+      if (mode === 'movel' || mode === 'movep') resetCartesianTarget(side, mode);
     };
   });
 
@@ -580,9 +656,21 @@ function renderPanel(side) {
   panel.querySelector(`#${side}_sv_ghost`).onchange = ev =>
     setGhostVisible(side, ev.target.checked);
 
-  // ── MoveL buttons ─────────────────────────────────
-  panel.querySelector(`#${side}_lv_act`)  .onclick = () => activateMoveL(side, true);
-  panel.querySelector(`#${side}_lv_deact`).onclick = () => activateMoveL(side, false);
+  // ── Cartesian motion buttons ──────────────────────
+  panel.querySelector(`#${side}_lv_act`).onclick = () => activateCartesianBall(side, 'movel', true);
+  panel.querySelector(`#${side}_lv_current`).onclick = () => resetCartesianTarget(side, 'movel');
+  panel.querySelector(`#${side}_lv_apply`).onclick = () => sendCartesian(side, 'movel');
+  panel.querySelector(`#${side}_lv_deact`).onclick = () => {
+    activateCartesianBall(side, 'movel', false);
+    api(side, 'stop').then(d => setStatus(side, d.msg));
+  };
+  panel.querySelector(`#${side}_pv_act`).onclick = () => activateCartesianBall(side, 'movep', true);
+  panel.querySelector(`#${side}_pv_current`).onclick = () => resetCartesianTarget(side, 'movep');
+  panel.querySelector(`#${side}_pv_apply`).onclick = () => sendCartesian(side, 'movep');
+  panel.querySelector(`#${side}_pv_stop`).onclick = () => {
+    activateCartesianBall(side, 'movep', false);
+    api(side, 'stop').then(d => setStatus(side, d.msg));
+  };
 
   // ── Freedrive buttons ─────────────────────────────
   panel.querySelector(`#${side}_fd_start`).onclick = () => {
@@ -682,7 +770,7 @@ function updateOverlay(side, state) {
   const poseStr = ee
     ? `EE: (${fmt(ee.pos[0])}, ${fmt(ee.pos[1])}, ${fmt(ee.pos[2])})`
     : 'EE: --';
-  ['pose_row', 'fd_pose'].forEach(id => {
+  ['pose_row', 'movep_pose', 'fd_pose'].forEach(id => {
     const pel = document.getElementById(`${side}_${id}`);
     if (pel) { pel.innerHTML = `<span>Pose</span>${poseStr}`; }
   });

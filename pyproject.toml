@@ -37,7 +37,7 @@ include = ["onero_sdk*"]
 
 [tool.setuptools.package-data]
 onero_sdk = [
-    "urdf/**/*.urdf", "urdf/**/*.stl", "urdf/**/*.STL", "urdf/**/*.srdf",
+    "urdf/**/*.urdf", "urdf/**/*.srdf",
     "meshes/**/*.STL", "meshes/**/*.stl",
     "debugui/static/**/*",
 ]

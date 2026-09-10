@@ -12,7 +12,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/base_link.STL" />
+        <mesh filename="../../meshes/A1/A1_r/base_link.STL" />
       </geometry>
       <material name="">
         <color rgba="0.776470588235294 0.756862745098039 0.737254901960784 1" />
@@ -21,7 +21,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/base_link.STL" />
+        <mesh filename="../../meshes/A1/A1_r/base_link.STL" />
       </geometry>
     </collision>
   </link>
@@ -34,7 +34,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/Link1.STL" />
+        <mesh filename="../../meshes/A1/A1_r/Link1.STL" />
       </geometry>
       <material name="">
         <color rgba="0.898039215686275 0.917647058823529 0.929411764705882 1" />
@@ -43,7 +43,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/Link1.STL" />
+        <mesh filename="../../meshes/A1/A1_r/Link1.STL" />
       </geometry>
     </collision>
   </link>
@@ -63,7 +63,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/Link2.STL" />
+        <mesh filename="../../meshes/A1/A1_r/Link2.STL" />
       </geometry>
       <material name="">
         <color rgba="0.898039215686275 0.917647058823529 0.929411764705882 1" />
@@ -72,7 +72,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/Link2.STL" />
+        <mesh filename="../../meshes/A1/A1_r/Link2.STL" />
       </geometry>
     </collision>
   </link>
@@ -92,7 +92,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/Link3.STL" />
+        <mesh filename="../../meshes/A1/A1_r/Link3.STL" />
       </geometry>
       <material name="">
         <color rgba="0.898039215686275 0.917647058823529 0.929411764705882 1" />
@@ -101,7 +101,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/Link3.STL" />
+        <mesh filename="../../meshes/A1/A1_r/Link3.STL" />
       </geometry>
     </collision>
   </link>
@@ -121,7 +121,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/Link4.STL" />
+        <mesh filename="../../meshes/A1/A1_r/Link4.STL" />
       </geometry>
       <material name="">
         <color rgba="0.898039215686275 0.917647058823529 0.929411764705882 1" />
@@ -130,7 +130,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/Link4.STL" />
+        <mesh filename="../../meshes/A1/A1_r/Link4.STL" />
       </geometry>
     </collision>
   </link>
@@ -150,7 +150,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/Link5.STL" />
+        <mesh filename="../../meshes/A1/A1_r/Link5.STL" />
       </geometry>
       <material name="">
         <color rgba="0.898039215686275 0.917647058823529 0.929411764705882 1" />
@@ -159,7 +159,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/Link5.STL" />
+        <mesh filename="../../meshes/A1/A1_r/Link5.STL" />
       </geometry>
     </collision>
   </link>
@@ -179,7 +179,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/Link6.STL" />
+        <mesh filename="../../meshes/A1/A1_r/Link6.STL" />
       </geometry>
       <material name="">
         <color rgba="1 1 1 1" />
@@ -188,7 +188,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/Link6.STL" />
+        <mesh filename="../../meshes/A1/A1_r/Link6.STL" />
       </geometry>
     </collision>
   </link>
@@ -208,7 +208,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/Link7.STL" />
+        <mesh filename="../../meshes/A1/A1_r/Link7.STL" />
       </geometry>
       <material name="">
         <color rgba="0.898039215686275 0.917647058823529 0.929411764705882 1" />
@@ -217,7 +217,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="./meshes/a1_r/Link7.STL" />
+        <mesh filename="../../meshes/A1/A1_r/Link7.STL" />
       </geometry>
     </collision>
   </link>
