@@ -908,6 +908,7 @@ class Arm(ArmTransformsMixin):
                 compute_gains=self._compute_gains if use_adaptive else None,
                 fixed_kp=kp if not use_adaptive else None,
                 fixed_kd=kd if not use_adaptive else None,
+                max_joint_velocity=self._safety.max_velocity,
             )
 
             # Solve the complete Cartesian path before commanding hardware.
@@ -1044,6 +1045,7 @@ class Arm(ArmTransformsMixin):
                 compute_gains=self._compute_gains if use_adaptive else None,
                 fixed_kp=kp if not use_adaptive else None,
                 fixed_kd=kd if not use_adaptive else None,
+                max_joint_velocity=self._safety.max_velocity,
             )
 
             # Preflight all IK waypoints before sending the first command; see

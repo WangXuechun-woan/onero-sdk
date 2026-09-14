@@ -93,6 +93,11 @@ class SafetyMonitor:
         return self._config.max_delta_per_step * self._config.control_freq
 
     @property
+    def max_velocity(self) -> float:
+        """Configured per-joint velocity ceiling in rad/s."""
+        return self._config.max_velocity
+
+    @property
     def on_error(self) -> Optional[Callable]:
         return self._on_error
 

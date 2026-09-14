@@ -217,6 +217,59 @@ class TestSpeedl:
 class TestIKPathContinuity:
     """IK warm-start produces smooth joint trajectories during Cartesian motion."""
 
+    def test_movel_rejects_discontinuous_planned_joint_frames(self):
+        """A branch switch must fail planning instead of reaching the backend."""
+        from onero_sdk.exceptions import OneroSafetyError
+        from onero_sdk.motion_strategy import MotionContext, cartesian_linear_frames
+
+        class BranchSwitchingIK:
+            def __init__(self):
+                self.calls = 0
+
+            def solve(self, *_args, **_kwargs):
+                self.calls += 1
+                q = np.zeros(7)
+                if self.calls >= 2:
+                    q[3] = 0.20
+                return q
+
+        ctx = MotionContext(
+            start_joints=[0.0] * 7, num_joints=7, dt=0.005, steps=2,
+            fixed_kp=20.0, fixed_kd=2.0,
+        )
+        with pytest.raises(OneroSafetyError, match="discontinuous IK trajectory"):
+            list(cartesian_linear_frames(
+                ctx, np.zeros(3), np.eye(3), np.array([0.01, 0.0, 0.0]),
+                np.eye(3), BranchSwitchingIK(), lambda a, _b, _t: a,
+            ))
+
+    def test_movel_accepts_small_ik_step_and_caps_feedforward_velocity(self):
+        """Near-singularity amplification is slowed, not mistaken for a branch jump."""
+        from onero_sdk.motion_strategy import MotionContext, cartesian_linear_frames
+
+        class MarginalIKStep:
+            def __init__(self):
+                self.calls = 0
+
+            def solve(self, *_args, **_kwargs):
+                self.calls += 1
+                q = np.zeros(7)
+                if self.calls >= 2:
+                    q[3] = 0.026
+                return q
+
+        ctx = MotionContext(
+            start_joints=[0.0] * 7, num_joints=7, dt=0.005, steps=2,
+            fixed_kp=20.0, fixed_kd=2.0, max_joint_velocity=5.0,
+        )
+        frames = list(cartesian_linear_frames(
+            ctx, np.zeros(3), np.eye(3), np.array([0.01, 0.0, 0.0]),
+            np.eye(3), MarginalIKStep(), lambda a, _b, _t: a,
+        ))
+
+        assert frames[1].positions[3] == pytest.approx(0.026)
+        assert frames[1].velocities[3] == pytest.approx(5.0)
+
     def test_movel_no_large_joint_jumps(self, arm):
         """During movel, per-joint change bounded (no IK configuration jumps)."""
         joints_before = list(arm.state.joints)

@@ -52,6 +52,7 @@ class MotionContext:
     compute_gains: Optional[Callable] = None
     fixed_kp: Optional[float] = None
     fixed_kd: Optional[float] = None
+    max_joint_velocity: float = 5.0
 
     def gains_for(self, q):
         if self.compute_gains is not None:
@@ -107,12 +108,37 @@ def scurve_joint_frames(ctx: MotionContext, profiles: list, actual_steps: int):
         )
 
 
+def _continuous_ik_velocity(previous, current, ctx: MotionContext, step: int):
+    """Cap local IK speed while rejecting a genuine branch switch."""
+    delta = np.asarray(current, dtype=float) - np.asarray(previous, dtype=float)
+    joint = int(np.argmax(np.abs(delta)))
+    max_step = ctx.max_joint_velocity * ctx.dt
+
+    # A small overshoot of the per-frame velocity limit is common near a
+    # singularity and remains a continuous solution. Reject only a materially
+    # different configuration branch; clamp feed-forward velocity for smaller
+    # local steps and let position rate limiting provide the second boundary.
+    branch_step = max(0.05, 2.0 * max_step)
+    if abs(delta[joint]) > branch_step + 1e-9:
+        raise OneroSafetyError(
+            reason=(
+                "discontinuous IK trajectory: "
+                f"joint {joint + 1} changes {delta[joint]:+.4f} rad at path "
+                f"step {step} (continuity limit {branch_step:.4f} rad)"
+            ),
+            joint_index=joint,
+        )
+    velocity = delta / ctx.dt
+    return np.clip(
+        velocity, -ctx.max_joint_velocity, ctx.max_joint_velocity).tolist()
+
+
 def cartesian_linear_frames(ctx: MotionContext, start_pos, start_rot, target_pos, target_rot,
                             ik_solver, slerp_fn):
     n = ctx.num_joints
     dt = ctx.dt
     pos_delta = target_pos - start_pos
-    prev_joints = None
+    prev_joints = list(ctx.start_joints)
     for step in range(ctx.steps + 1):
         t = step / ctx.steps
         alpha = 0.5 * (1.0 - math.cos(math.pi * t))
@@ -127,13 +153,13 @@ def cartesian_linear_frames(ctx: MotionContext, start_pos, start_rot, target_pos
                             max_iter=50, pos_tol=1e-3, rot_tol=1e-2,
                             strict=True)
         joints = q.tolist() if hasattr(q, 'tolist') else list(q)
+        planned_velocities = _continuous_ik_velocity(
+            prev_joints, joints, ctx, step)
 
         if step == 0 or step == ctx.steps:
             velocities = [0.0] * n
-        elif prev_joints is not None:
-            velocities = [(joints[i] - prev_joints[i]) / dt for i in range(n)]
         else:
-            velocities = [0.0] * n
+            velocities = planned_velocities
         prev_joints = list(joints)
 
         kps, kds = ctx.gains_for(joints)
@@ -147,7 +173,7 @@ def circular_arc_frames(ctx: MotionContext, center, v0, normal, total_angle,
                         r0, r1, r2, ik_solver, slerp_fn, rotate_vector_fn):
     n = ctx.num_joints
     dt = ctx.dt
-    prev_joints = None
+    prev_joints = list(ctx.start_joints)
     for step in range(ctx.steps + 1):
         t = step / ctx.steps
         alpha = 0.5 * (1.0 - math.cos(math.pi * t))
@@ -164,10 +190,8 @@ def circular_arc_frames(ctx: MotionContext, center, v0, normal, total_angle,
                             max_iter=50, pos_tol=1e-3, rot_tol=1e-2,
                             strict=True)
         joints = q.tolist() if hasattr(q, 'tolist') else list(q)
-
-        if prev_joints is not None:
-            velocities = [(joints[i] - prev_joints[i]) / dt for i in range(n)]
-        else:
+        velocities = _continuous_ik_velocity(prev_joints, joints, ctx, step)
+        if step == 0 or step == ctx.steps:
             velocities = [0.0] * n
         prev_joints = list(joints)
 
