@@ -31,6 +31,20 @@ from .exceptions import OneroConfigError
 GRAVITY_MAGNITUDE = 9.81
 _WORLD_GRAVITY = np.array([0.0, 0.0, -GRAVITY_MAGNITUDE])
 
+# Canonical vertical shoulder installation. Matrices are R_world_base:
+# columns are the URDF base +X/+Y/+Z axes expressed in the shared world frame.
+# Both base +X axes point up; base +Z points outward on each shoulder.
+R_WORLD_BASE_HUMANOID_LEFT = np.array([
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0],
+    [1.0, 0.0, 0.0],
+])
+R_WORLD_BASE_HUMANOID_RIGHT = np.array([
+    [0.0, -1.0, 0.0],
+    [0.0, 0.0, -1.0],
+    [1.0, 0.0, 0.0],
+])
+
 
 class MountingPreset(Enum):
     """Installation orientation presets."""
@@ -86,15 +100,10 @@ def get_mounting_rotation(config: MountingConfig) -> np.ndarray:
         R = np.eye(3)
 
     elif config.preset == MountingPreset.A1_VERTICAL:
-        # R_world_base columns are the base axes expressed in world frame.
-        # This is the matrix already exercised by the A1L real-hardware
-        # tests and matches the develop SDK's vertical gravity convention
-        # for both A1L and A1R.
-        R = np.array([
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [1.0, 0.0, 0.0],
-        ])
+        # Legacy side-agnostic alias. It has the canonical vertical gravity
+        # direction but the LEFT horizontal yaw. New dual-arm code should use
+        # HUMANOID_LEFT/HUMANOID_RIGHT explicitly.
+        R = R_WORLD_BASE_HUMANOID_LEFT.copy()
 
     elif config.preset == MountingPreset.SIDE_MOUNT_LEFT:
         # Base Z points toward world +Y (left)
@@ -117,20 +126,10 @@ def get_mounting_rotation(config: MountingConfig) -> np.ndarray:
         ])
 
     elif config.preset == MountingPreset.HUMANOID_LEFT:
-        # Same as SIDE_MOUNT_LEFT for now (shoulder mount, Z outward-left)
-        R = np.array([
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [0.0, -1.0, 0.0],
-        ])
+        R = R_WORLD_BASE_HUMANOID_LEFT.copy()
 
     elif config.preset == MountingPreset.HUMANOID_RIGHT:
-        # Same as SIDE_MOUNT_RIGHT for now
-        R = np.array([
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, -1.0],
-            [0.0, 1.0, 0.0],
-        ])
+        R = R_WORLD_BASE_HUMANOID_RIGHT.copy()
 
     elif config.preset == MountingPreset.CEILING:
         # Base Z points toward world -Z (down)

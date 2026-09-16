@@ -55,8 +55,8 @@ class DualArm:
                right_channel: Optional[str] = None,
                left_backend: Optional[ArmBackend] = None,
                right_backend: Optional[ArmBackend] = None,
-               left_mounting: str = "side_mount_left",
-               right_mounting: str = "side_mount_right",
+               left_mounting: str = "humanoid_left",
+               right_mounting: str = "humanoid_right",
                left_with_gripper: bool = False,
                right_with_gripper: bool = False,
                base_position_left: Optional[list] = None,
@@ -77,8 +77,8 @@ class DualArm:
             right_channel: CAN channel for right arm (e.g. "can1").
             left_backend: Custom backend for left arm (alternative to channel).
             right_backend: Custom backend for right arm (alternative to channel).
-            left_mounting: Left arm mounting preset. Default "side_mount_left".
-            right_mounting: Right arm mounting preset. Default "side_mount_right".
+            left_mounting: Left arm mounting preset. Default "humanoid_left".
+            right_mounting: Right arm mounting preset. Default "humanoid_right".
             left_with_gripper: Select the calibrated gripper gravity profile
                                for the left arm.
             right_with_gripper: Select the calibrated gripper gravity profile
@@ -141,12 +141,12 @@ class DualArm:
             left:
               model: "A1L"
               channel: "can0"
-              mounting: "side_mount_left"
+              mounting: "humanoid_left"
               base_position: [0, 0.15, 0]
             right:
               model: "A1R"
               channel: "can1"
-              mounting: "side_mount_right"
+              mounting: "humanoid_right"
               base_position: [0, -0.15, 0]
             # Optional top-level defaults:
             world_frame: true
@@ -177,7 +177,7 @@ class DualArm:
         left = Arm(
             model=left_cfg.get("model", "A1L"),
             channel=left_cfg.get("channel"),
-            mounting=left_cfg.get("mounting", "side_mount_left"),
+            mounting=left_cfg.get("mounting", "humanoid_left"),
             world_frame=world_frame,
             base_position=bp_left,
             with_gripper=left_cfg.get("with_gripper", False),
@@ -187,7 +187,7 @@ class DualArm:
         right = Arm(
             model=right_cfg.get("model", "A1R"),
             channel=right_cfg.get("channel"),
-            mounting=right_cfg.get("mounting", "side_mount_right"),
+            mounting=right_cfg.get("mounting", "humanoid_right"),
             world_frame=world_frame,
             base_position=bp_right,
             with_gripper=right_cfg.get("with_gripper", False),

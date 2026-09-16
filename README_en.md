@@ -142,6 +142,25 @@ with Arm("A1R", channel="can0") as arm:
 
 **When to use**: Multi-arm coordination with a shared world frame; vision-guided manipulation using camera frame; tool-relative motion (advance along tool Z); workpiece frame simplifying programming.
 
+#### Default-frame quick reference
+
+| Construction | Default frame | Default mounting/origin | Meaning of `frame=None` |
+|---|---|---|---|
+| Single arm `Arm(...)` | `base` | `mounting=None` means `upright`; origin is the URDF `base_link` origin | Cartesian APIs use that arm's own base frame |
+| Single arm `Arm(..., world_frame=True)` | `world` | World origin coincides with the base by default; orientation comes from `mounting` | Uses world axes X=forward, Y=left, Z=up |
+| Dual arm `DualArm.create(...)` | `world` | Defaults to `humanoid_left/right`; `arm_spacing` or both base positions are required | Both arms share one world frame |
+
+Additional conventions:
+
+- A single arm's default `base` axes are intrinsic URDF axes; they do **not** automatically mean forward/left/up in the physical workspace. Configure `mounting=` and use `world_frame=True` when intuitive workspace directions are required.
+- Dual-arm world axes are always `X=forward, Y=left, Z=up`. With `arm_spacing=d`, the left/right base origins are `[0,+d/2,0]` and `[0,-d/2,0]`.
+- Left vertical-shoulder mapping: `base +X → world +Z`, `base +Y → world +X`, `base +Z → world +Y`.
+- Right vertical-shoulder mapping: `base +X → world +Z`, `base +Y → world -X`, `base +Z → world -Y`.
+- `get_pose()` returns the flange pose by default. After `set_tcp()`, Cartesian APIs operate on the TCP. `frame="tool"` denotes an increment relative to the current TCP.
+- An explicit `frame="base"`, `"world"`, or `"tool"` overrides the default. Read `arm.default_frame` to inspect it.
+
+See [`docs/guide_coordinate_frames.md`](docs/guide_coordinate_frames.md) for the authoritative URDF axes, zero-pose Link7 coordinates, left/right mounting matrices, and gravity directions.
+
 ---
 
 #### 1. Base Frame (default)
@@ -182,9 +201,9 @@ arm.movel([0.3, 0.0, 0.4, 0, 0, 0])  # absolute position in world frame
 
 # ─── Dual arm (must specify each base position in world) ───
 # World origin chosen at the midpoint between the two arms, on the table surface
-arm_left = Arm("A1L", channel="can0", mounting="side_mount_left",
+arm_left = Arm("A1L", channel="can0", mounting="humanoid_left",
                world_frame=True, base_position=[0, 0.15, 0.8])
-arm_right = Arm("A1R", channel="can1", mounting="side_mount_right",
+arm_right = Arm("A1R", channel="can1", mounting="humanoid_right",
                 world_frame=True, base_position=[0, -0.15, 0.8])
 
 # Both arms use the same world frame
@@ -793,10 +812,10 @@ with DualArm.create(
 world origin (centered between arms)
     │
     ├─ Y=+spacing/2 ──► left arm base
-    │                    └─ mounting="side_mount_left" defines rotation
+    │                    └─ mounting="humanoid_left" defines rotation
     │
     └─ Y=-spacing/2 ──► right arm base
-                         └─ mounting="side_mount_right" defines rotation
+                         └─ mounting="humanoid_right" defines rotation
 ```
 
 - `arm_spacing`: sets Y-axis distance only (shortcut for symmetric mounting), world origin at midpoint

@@ -165,6 +165,25 @@ with Arm("A1R", channel="can0") as arm:
 
 **适用场景**：多臂协作统一世界坐标系；视觉引导用相机坐标系下发指令；工具相对运动（沿工具 Z 轴前进）；工件坐标系简化编程。
 
+#### 默认坐标系速查
+
+| 使用方式 | 默认 frame | 默认安装/原点 | `frame=None` 的含义 |
+|---|---|---|---|
+| 单臂 `Arm(...)` | `base` | `mounting=None` 等价于 `upright`；base 原点为 URDF `base_link` 原点 | 所有笛卡尔 API 使用该臂自己的 base 坐标系 |
+| 单臂 `Arm(..., world_frame=True)` | `world` | world 原点默认与 base 原点重合；方向由 `mounting` 决定 | 使用 X=前、Y=左、Z=上的 world 坐标系 |
+| 双臂 `DualArm.create(...)` | `world` | 左右臂默认分别为 `humanoid_left/right`；必须通过 `arm_spacing` 或两个 `base_position` 定位 | 两臂共享同一个 world 坐标系 |
+
+补充约定：
+
+- 单臂默认的 `base` 轴是 URDF 固有轴，**不自动等同于物理环境中的前/左/上**。需要直观方向时，应正确设置 `mounting=` 并启用 `world_frame=True`。
+- 双臂默认 world 轴统一为 `X=前方、Y=左方、Z=上方`。`arm_spacing=d` 时，左/右 base 原点分别为 `[0,+d/2,0]` 和 `[0,-d/2,0]`。
+- 左垂直肩部映射：`base +X → world +Z`、`base +Y → world +X`、`base +Z → world +Y`。
+- 右垂直肩部映射：`base +X → world +Z`、`base +Y → world -X`、`base +Z → world -Y`。
+- `get_pose()` 默认返回 flange 位姿；调用 `set_tcp()` 后，笛卡尔 API 使用 TCP。`frame="tool"` 表示相对当前 TCP 的增量运动。
+- 显式传入 `frame="base"`、`"world"` 或 `"tool"` 始终覆盖默认 frame；可用 `arm.default_frame` 查询当前默认值。
+
+URDF 内部轴、零位 Link7 坐标、左右装配矩阵和重力方向的权威表见 [`docs/guide_coordinate_frames.md`](docs/guide_coordinate_frames.md)。
+
 ---
 
 #### 1. base 坐标系（默认）
@@ -206,9 +225,9 @@ arm.movel([0.3, 0.0, 0.4, 0, 0, 0])  # 在世界坐标系中的绝对位置
 
 # ─── 双臂（必须指定各自 base 在 world 中的位置）───
 # world 原点选在两臂中间的桌面上
-arm_left = Arm("A1L", channel="can0", mounting="side_mount_left",
+arm_left = Arm("A1L", channel="can0", mounting="humanoid_left",
                world_frame=True, base_position=[0, 0.15, 0.8])
-arm_right = Arm("A1R", channel="can1", mounting="side_mount_right",
+arm_right = Arm("A1R", channel="can1", mounting="humanoid_right",
                 world_frame=True, base_position=[0, -0.15, 0.8])
 
 # 两条臂使用同一个世界坐标系下发指令
@@ -820,10 +839,10 @@ with DualArm.create(
 world 原点 (两臂中间)
     │
     ├─ Y=+spacing/2 ──► left arm base
-    │                    └─ mounting="side_mount_left" 定义旋转
+    │                    └─ mounting="humanoid_left" 定义旋转
     │
     └─ Y=-spacing/2 ──► right arm base
-                         └─ mounting="side_mount_right" 定义旋转
+                         └─ mounting="humanoid_right" 定义旋转
 ```
 
 - `arm_spacing`：只设置 Y 轴间距（对称安装的快捷方式），world 原点在正中间

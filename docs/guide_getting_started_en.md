@@ -73,19 +73,20 @@ TCP Frame (optional, set with set_tcp())
 
 ### Mounting
 
-The A1 is typically side-mounted (Z-axis pointing left or right), not upright. Setting the correct mounting ensures:
+The current dual-arm A1 installation uses vertical shoulder mounts: URDF base +X points up on both arms and base +Z points outward. Other fixtures may still use the side-mount presets. Setting the correct mounting ensures:
 - Correct gravity compensation in freedrive/force mode
 - Intuitive world-frame coordinates
 
 ```python
-arm = Arm("A1R", channel="can0", mounting="side_mount_left")
+left = Arm("A1L", channel="can0", mounting="humanoid_left")
+right = Arm("A1R", channel="can1", mounting="humanoid_right")
 
 # Available presets:
-# "upright"          — Z points up (default)
-# "side_mount_left"  — Z points left (most common)
-# "side_mount_right" — Z points right
-# "shoulder_left"    — humanoid left shoulder
-# "shoulder_right"   — humanoid right shoulder
+# "upright"          — base Z points up (raw default)
+# "side_mount_left"  — base Z points left
+# "side_mount_right" — base Z points right
+# "humanoid_left"    — canonical vertical left shoulder
+# "humanoid_right"   — canonical vertical right shoulder
 # "ceiling"          — mounted upside-down
 ```
 
@@ -93,7 +94,7 @@ arm = Arm("A1R", channel="can0", mounting="side_mount_left")
 
 ```python
 arm = Arm("A1R", channel="can0",
-          mounting="side_mount_left",
+          mounting="humanoid_right",
           world_frame=True)
 
 # Now all Cartesian APIs use intuitive world coordinates

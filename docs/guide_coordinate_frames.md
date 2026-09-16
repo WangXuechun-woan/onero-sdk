@@ -2,9 +2,7 @@
 
 本文说明 A1 单臂/双臂安装时的坐标系、左右臂模型选择，以及 7 个关节正方向的定义。
 
-![Onero A1 双臂坐标系与关节正方向](assets/dual_arm_coordinate_frames.svg)
-
-图中的俯视示意统一按“纸面上方 = 前方（world +X），纸面左侧 = 左方（world +Y）”绘制。
+本文所有俯视描述统一采用“前方 = world +X，左方 = world +Y，上方 = world +Z”。
 
 ## 推荐表达方式
 
@@ -15,52 +13,96 @@
 3. **关节正方向**：用 URDF joint axis + 右手定则定义，不用“向内/向外”这类依赖视角的说法。
 4. **双臂镜像规则**：给一个明确的左右臂姿态映射规则。
 
-## Frame 约定
+## 两层坐标系：URDF 内部与装配后 world
 
-### World frame
+SDK 明确区分两层：
 
-SDK 的世界坐标系采用：
+1. **URDF base frame**：机械臂内部运动学坐标，左右模型各自固定，不随安装改变。
+2. **装配后 world frame**：用户编程坐标，统一约定 `X=前、Y=左、Z=上`。
+
+二者只通过安装变换连接，不修改 URDF：
 
 ```text
-X = forward / 前方
-Y = left    / 左方
-Z = up      / 上方
+p_world = R_world_base · p_base + base_position
+R_world_tcp = R_world_base · R_base_tcp
 ```
 
-### Base frame
+`R_world_base` 的三列分别是 URDF `base +X/+Y/+Z` 在 world 中的方向。
 
-Base frame 是 URDF 中 `base_link` 的坐标系。笛卡尔 API 默认使用 base frame；如果创建 Arm 时启用 `world_frame=True`，SDK 会自动做 world/base 变换。
+### URDF 内部 base frame
 
-```python
-arm = Arm("A1R", channel="can0", mounting="side_mount_right", world_frame=True)
-arm.movel([0.3, 0.0, 0.2, 0.0, 0.0, 0.0])
+| 项目 | A1L | A1R |
+|---|---:|---:|
+| 根坐标 | `base_link` | `base_link` |
+| J1 原点 | `[0,0,0.0315] m` | `[0,0,0.0315] m` |
+| J1 正轴 | `base +Z` | `base +Z` |
+| 零位 Link7 原点 | `[-0.5665,-0.0001,0.1582] m` | `[-0.5665,0,0.1590] m` |
+| 零位主伸展方向 | `base -X` | `base -X` |
+
+因此 URDF 的 `base +X/+Y/+Z` 只是 CAD/运动学固有轴，不能直接解释成真实环境中的前/左/上。
+
+### 装配后统一 world frame
+
+```text
+world +X = forward / 前方
+world +Y = left    / 左方
+world +Z = up      / 上方
 ```
 
-### Tool / TCP frame
+垂直肩部装配使用唯一的左右矩阵：
 
-`get_pose()` 默认返回法兰位姿。调用 `set_tcp()` 后，笛卡尔 API 的目标点改为工具尖端。
+```text
+R_world_base_left =
+[[0, 1, 0],
+ [0, 0, 1],
+ [1, 0, 0]]
 
-```python
-arm.set_tcp([0.0, 0.0, 0.15])
+R_world_base_right =
+[[ 0,-1, 0],
+ [ 0, 0,-1],
+ [ 1, 0, 0]]
 ```
 
-## 双臂安装推荐
+轴映射与零位结果：
 
-推荐把左右臂明确建模为不同模型：
+| 机械臂 | 安装预设 | base +X | base +Y | base +Z | 零位 Link7（相对肩部，world） | 重力（base） |
+|---|---|---|---|---|---|---|
+| 左臂 A1L | `humanoid_left` | 上 `+Zw` | 前 `+Xw` | 左/外 `+Yw` | `[≈0,+0.158,-0.566] m` | `[-9.81,0,0]` |
+| 右臂 A1R | `humanoid_right` | 上 `+Zw` | 后 `-Xw` | 右/外 `-Yw` | `[≈0,-0.159,-0.566] m` | `[-9.81,0,0]` |
+
+这两个矩阵是 `mounting.py`、`DualArm.create()` 和 `DualMujocoBackend` 的共同权威来源。`a1_vertical` 仅保留为旧的、不区分左右侧的兼容预设：它的重力方向正确，但水平 yaw 等同于左臂；新双臂代码不要用它替代右臂矩阵。
+
+### 默认行为
+
+| 模式 | 构造方式 | 默认 frame | 默认安装姿态 | 默认原点 |
+|---|---|---|---|---|
+| 单臂原始 URDF | `Arm(...)` | `base` | `upright`（`mounting=None`） | URDF `base_link` 原点 |
+| 左单臂装配系 | `Arm("A1L", mounting="humanoid_left", world_frame=True, ...)` | `world` | 左垂直肩部 | `base_position` |
+| 右单臂装配系 | `Arm("A1R", mounting="humanoid_right", world_frame=True, ...)` | `world` | 右垂直肩部 | `base_position` |
+| 双臂 | `DualArm.create(...)` | `world` | 左 `humanoid_left`，右 `humanoid_right` | `arm_spacing` 或左右 `base_position` |
+
+若 `arm_spacing=d`，world 原点位于两臂 base 中点：
+
+```text
+left base_position  = [0,+d/2,0]
+right base_position = [0,-d/2,0]
+```
+
+推荐单臂和双臂物理控制都面向 world 编程：
 
 ```python
-left = Arm("A1L", channel="can0", mounting="side_mount_left",
+left = Arm("A1L", channel="can0", mounting="humanoid_left",
            world_frame=True, base_position=[0, 0.15, 0])
-right = Arm("A1R", channel="can1", mounting="side_mount_right",
+right = Arm("A1R", channel="can1", mounting="humanoid_right",
             world_frame=True, base_position=[0, -0.15, 0])
 ```
 
-对应关系：
+```python
+dual = DualArm.create(left_channel="can0", right_channel="can1",
+                      arm_spacing=0.30)
+```
 
-| 机械臂 | 模型 | 安装预设 | base Z 方向 | base Y 方向 | 重力在 base 中 |
-|---|---|---|---|---|---|
-| 左臂 | `A1L` | `side_mount_left` | world +Y / 左 | world -Z / 下 | +Y |
-| 右臂 | `A1R` | `side_mount_right` | world -Y / 右 | world +Z / 上 | -Y |
+对任意笛卡尔 API，显式 `frame=` 会覆盖默认值；`arm.default_frame` 可查询当前值。`get_pose()` 默认描述 flange；调用 `set_tcp()` 后描述 TCP；`frame="tool"` 表示相对当前 TCP 的增量运动。
 
 ## 关节正方向定义
 

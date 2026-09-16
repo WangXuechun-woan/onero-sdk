@@ -65,14 +65,15 @@ TCP 坐标系 (Tool Center Point)
 
 ### 安装方式 (Mounting)
 
-A1 通常**侧装**在支架上 (Z 轴朝左或朝右)，而非直立。安装方式影响：
+当前双臂 A1 采用**垂直肩部装配**：两臂 URDF `base +X` 朝上、`base +Z` 分别朝左/右外侧。其他支架安装仍可使用 side-mount 预设。安装方式影响：
 
 1. **重力补偿方向** — freedrive/力控是否正确
 2. **世界坐标系映射** — "向前移动" 对应哪个基座轴
 
 ```python
-# 最常见：侧装左臂
-arm = Arm("A1R", channel="can0", mounting="side_mount_left")
+# 垂直肩部单臂（按模型选择左右预设）
+left = Arm("A1L", channel="can0", mounting="humanoid_left")
+right = Arm("A1R", channel="can1", mounting="humanoid_right")
 
 # 所有预设
 from onero_sdk import MountingPreset
@@ -90,7 +91,7 @@ from onero_sdk import MountingPreset
 
 ```python
 arm = Arm("A1R", channel="can0",
-          mounting="side_mount_left",
+          mounting="humanoid_right",
           world_frame=True)
 
 pos, rot = arm.get_pose()   # 世界坐标系 (X前 Y左 Z上)

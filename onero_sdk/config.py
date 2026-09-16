@@ -53,12 +53,12 @@ def load_dual_arm_config(path: str) -> dict:
         left:
           model: "A1L"
           channel: "can0"
-          mounting: "side_mount_left"
+          mounting: "humanoid_left"
           base_position: [0, 0.15, 0]
         right:
           model: "A1R"
           channel: "can1"
-          mounting: "side_mount_right"
+          mounting: "humanoid_right"
           base_position: [0, -0.15, 0]
         # Optional:
         world_frame: true

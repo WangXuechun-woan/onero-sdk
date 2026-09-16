@@ -1064,43 +1064,95 @@ def demo_trajectory_profiles():
 
 
 def demo_dual_arm():
-    """Dual arm — mirror motion of two arms."""
+    """Dual arm — mirrored motion through the public DualArm/Arm stack."""
     print("Generating dual_arm.gif...")
+    from onero_sdk import DualArm
+    from onero_sdk.safety import SafetyConfig
     from onero_sdk.dual_mujoco_backend import DualMujocoBackend
 
     backend = DualMujocoBackend(model_name="A1R", realtime=False, control_dt=0.005)
+    left_backend, right_backend = backend.arm_backends()
+    dual = DualArm.create(
+        left_backend=left_backend,
+        right_backend=right_backend,
+        arm_spacing=0.24,
+        # MuJoCo's simplified actuator tracking lags the SDK reference more
+        # than hardware. Keep all kinematic/velocity/limit safety active while
+        # disabling only the hardware tracking-error latch for this renderer.
+        safety=SafetyConfig(
+            tracking_error_hard_threshold=0,
+            tracking_error_soft_threshold=0,
+        ),
+    )
+    dual.enable()
     renderer = mujoco.Renderer(backend._model, height=HEIGHT, width=WIDTH)
 
     frames = []
     render_every = max(1, int(1.0 / (FPS * backend._control_dt)))
-    step_counter = [0]
+    recorded_qpos = []
+    table_contact_cycles = []
+    table_id = mujoco.mj_name2id(
+        backend._model, mujoco.mjtObj.mjOBJ_BODY, "table")
 
-    orig_step = backend.step
+    # DualArm executes its two Arm calls on worker threads. EGL contexts are
+    # thread-affine, so record physics states in the control callback and render
+    # them afterward on this main thread. Also fail generation if a demo target
+    # ever pushes either arm into the table.
+    def record_step(shared):
+        recorded_qpos.append(shared._data.qpos[:14].copy())
+        for index in range(shared._data.ncon):
+            contact = shared._data.contact[index]
+            body1 = shared._model.geom_bodyid[int(contact.geom1)]
+            body2 = shared._model.geom_bodyid[int(contact.geom2)]
+            if table_id in (body1, body2):
+                table_contact_cycles.append(shared.control_cycles)
+                break
 
-    def hook_step(*args, **kwargs):
-        result = orig_step(*args, **kwargs)
-        step_counter[0] += 1
-        if step_counter[0] % render_every == 0:
-            img = render_scene(renderer, backend._model, backend._data,
-                               cam_distance=2.0, cam_azimuth=-150,
-                               cam_elevation=-20, cam_lookat=[0, 0, 0.9])
-            frames.append(img)
-        return result
+    backend.on_step = record_step
 
-    backend.step = hook_step
-
-    poses = [
-        ([1.4, 0.0, 0.0, 0.3, 0.0, 0.5, 0.0], [0.4, 0.0, 0.0, 1.3, 0.0, 0.5, 0.0]),
-        ([0.6, 0.0, 0.3, 1.0, 0.2, 0.5, 0.0], [0.6, 0.0, -0.3, 1.0, -0.2, 0.5, 0.0]),
-        ([1.0, 0.1, 0.0, 0.5, 0.0, 0.5, 0.0], [1.0, 0.1, 0.0, 0.5, 0.0, 0.5, 0.0]),
-        ([0.8, 0.0, 0.0, 0.8, 0.0, 0.5, 0.0], [0.8, 0.0, 0.0, 0.8, 0.0, 0.5, 0.0]),
+    # With the canonical A1L/A1R URDFs and humanoid mounting matrices,
+    # q_left = -q_right gives a world-space mirror about the sagittal Y=0 plane.
+    right_poses = [
+        [0.25, -0.10, 0.10, 0.30, 0.05, 0.20, 0.00],
+        [-0.45, -0.20, 0.20, 0.55, 0.10, 0.30, 0.05],
+        [0.00, 0.00, -0.30, 0.30, -0.20, 0.20, 0.00],
+        [0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00],
     ]
 
-    for r_target, l_target in poses:
-        backend.movej(r_target, l_target, duration=1.5)
+    # Stream a smooth, synchronized trajectory through the public realtime
+    # API. Unlike two independent blocking MoveJ planners, this guarantees one
+    # left and one right command in every shared-scene control cycle.
+    right_start = np.zeros(7)
+    steps_per_segment = int(2.0 / backend._control_dt)
+    for right_target in map(np.asarray, right_poses):
+        delta = right_target - right_start
+        for step in range(1, steps_per_segment + 1):
+            u = step / steps_per_segment
+            blend = u * u * (3.0 - 2.0 * u)
+            right_command = right_start + blend * delta
+            dual.servoj((-right_command).tolist(), right_command.tolist())
+        right_start = right_target
 
-    backend.step = orig_step
+    backend.on_step = None
+    if table_contact_cycles:
+        first_cycle = table_contact_cycles[0]
+        raise RuntimeError(
+            f"dual-arm demo contacted the table in "
+            f"{len(table_contact_cycles)} control cycles "
+            f"(first at cycle {first_cycle})")
+    final_qpos = backend._data.qpos[:14].copy()
+    for qpos in recorded_qpos[::render_every]:
+        backend._data.qpos[:14] = qpos
+        mujoco.mj_forward(backend._model, backend._data)
+        frames.append(render_scene(
+            renderer, backend._model, backend._data,
+            cam_distance=2.0, cam_azimuth=-150,
+            cam_elevation=-20, cam_lookat=[0, 0, 0.9]))
+    backend._data.qpos[:14] = final_qpos
+    mujoco.mj_forward(backend._model, backend._data)
     save_gif(frames, 'dual_arm.gif')
+    dual.left.close()
+    dual.right.close()
     renderer.close()
 
 

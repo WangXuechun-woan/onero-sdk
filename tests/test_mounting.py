@@ -46,6 +46,45 @@ class TestRotationMatrices:
         R = get_mounting_rotation(config)
         assert R.shape == (3, 3)
 
+    def test_humanoid_mounts_match_canonical_vertical_shoulder_frames(self):
+        left = get_mounting_rotation(
+            MountingConfig(preset=MountingPreset.HUMANOID_LEFT))
+        right = get_mounting_rotation(
+            MountingConfig(preset=MountingPreset.HUMANOID_RIGHT))
+
+        assert left == pytest.approx(np.array([
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+        ]))
+        assert right == pytest.approx(np.array([
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [1.0, 0.0, 0.0],
+        ]))
+
+
+class TestDualArmCanonicalDefaults:
+    def test_create_uses_canonical_humanoid_mounts_and_shared_world(self):
+        from unittest.mock import MagicMock
+        from onero_sdk import DualArm
+
+        left_backend = MagicMock()
+        left_backend.num_joints = 7
+        right_backend = MagicMock()
+        right_backend.num_joints = 7
+
+        dual = DualArm.create(
+            left_backend=left_backend,
+            right_backend=right_backend,
+            arm_spacing=0.30,
+        )
+
+        assert dual.left.default_frame == "world"
+        assert dual.right.default_frame == "world"
+        assert dual.left.mounting.preset == MountingPreset.HUMANOID_LEFT
+        assert dual.right.mounting.preset == MountingPreset.HUMANOID_RIGHT
+
 
 class TestGravityInBaseFrame:
     """Validate gravity vector direction and magnitude for each preset."""

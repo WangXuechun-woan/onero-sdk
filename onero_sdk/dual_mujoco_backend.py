@@ -10,6 +10,7 @@ Install: pip install onero-sdk[sim]
 
 import os
 import time
+import threading
 
 import numpy as np
 
@@ -18,7 +19,51 @@ try:
 except ImportError:
     mujoco = None
 
-from .backend import ArmState
+from .backend import ArmBackend, ArmState
+
+
+class _DualMujocoArmBackend(ArmBackend):
+    """One ArmBackend view into a shared DualMujocoBackend scene."""
+
+    def __init__(self, parent, side: str):
+        self._parent = parent
+        self._side = side
+        self._enabled = False
+
+    @property
+    def num_joints(self) -> int:
+        return 7
+
+    def enable(self) -> ArmState:
+        self._enabled = True
+        return self.get_state()
+
+    def disable(self) -> None:
+        self._enabled = False
+
+    def command(self, positions, velocities, kps, kds, torques) -> ArmState:
+        return self._parent._command_side(
+            self._side,
+            positions=list(positions), velocities=list(velocities),
+            kps=list(kps), kds=list(kds), torques=list(torques),
+        )
+
+    def command_velocity(self, velocities) -> ArmState:
+        state = self.get_state()
+        return self.command(
+            state.joints, velocities, [0.0] * 7, [5.0] * 7, [0.0] * 7)
+
+    def command_torque(self, torques) -> ArmState:
+        state = self.get_state()
+        return self.command(
+            state.joints, [0.0] * 7, [0.0] * 7, [0.0] * 7, torques)
+
+    def get_state(self) -> ArmState:
+        return self._parent._get_side_state(self._side)
+
+    def close(self, disable: bool = False) -> None:
+        if disable:
+            self.disable()
 
 
 class DualMujocoBackend:
@@ -47,6 +92,19 @@ class DualMujocoBackend:
         self._viewer = None
 
         self._model, self._data = self._build_scene(model_name, physics_dt, armature)
+
+        # Pair commands from the two public Arm instances into one atomic
+        # MuJoCo control cycle. This lets DualArm exercise the same Arm motion,
+        # gain, gravity and safety code used by hardware without racing mjData.
+        self._command_condition = threading.Condition()
+        self._pending_commands = {}
+        self._command_cycle = 0
+        self._cycle_results = {}
+        self._cycle_error = None
+        self._control_cycles = 0
+        self.on_step = None
+        self._left_arm_backend = _DualMujocoArmBackend(self, "left")
+        self._right_arm_backend = _DualMujocoArmBackend(self, "right")
 
         from .model_registry import get_model
         model_info = get_model(model_name)
@@ -136,17 +194,26 @@ class DualMujocoBackend:
             rgba=[0.75, 0.65, 0.55, 1.0],
         )
 
-        # Vertical shoulder mounting: base +X points up for BOTH arms, so the
-        # URDF zero pose (which extends mainly along base -X) hangs downward.
-        # A1L/A1R already contain the left/right kinematic mirroring.  Mirror
-        # the shoulder mounts by 180 degrees about world Z, not by flipping
-        # base +X: both +X axes stay up while each base +Z points outward.
-        # Using [-90, 0, 90] for the left site points base +X down and
-        # mirrors the vertical mounting a second time, making the arm rise.
-        r_site = torso.add_site(name='r_shoulder', pos=[0, -0.12, 0.22],
-                                euler=[90, 0, 90])
-        l_site = torso.add_site(name='l_shoulder', pos=[0, 0.12, 0.22],
-                                euler=[-90, 0, -90])
+        # Use the same authoritative R_world_base matrices as Arm/DualArm;
+        # do not maintain an independent set of visually tuned Euler angles.
+        from .mounting import (
+            R_WORLD_BASE_HUMANOID_LEFT,
+            R_WORLD_BASE_HUMANOID_RIGHT,
+        )
+
+        def _mujoco_quat(rotation):
+            quat = np.empty(4, dtype=float)  # MuJoCo order: [w, x, y, z]
+            mujoco.mju_mat2Quat(quat, np.asarray(rotation, dtype=float).ravel())
+            return quat
+
+        r_site = torso.add_site(
+            name='r_shoulder', pos=[0, -0.12, 0.22],
+            quat=_mujoco_quat(R_WORLD_BASE_HUMANOID_RIGHT),
+        )
+        l_site = torso.add_site(
+            name='l_shoulder', pos=[0, 0.12, 0.22],
+            quat=_mujoco_quat(R_WORLD_BASE_HUMANOID_LEFT),
+        )
 
         # Load and attach arms
         r_arm_spec = mujoco.MjSpec.from_file(r_urdf)
@@ -182,6 +249,83 @@ class DualMujocoBackend:
         data = mujoco.MjData(model)
 
         return model, data
+
+    @property
+    def control_cycles(self) -> int:
+        """Number of paired public-Arm control cycles executed."""
+        return self._control_cycles
+
+    def arm_backends(self) -> tuple[ArmBackend, ArmBackend]:
+        """Return ``(left, right)`` ArmBackend views of the shared scene."""
+        return self._left_arm_backend, self._right_arm_backend
+
+    def _get_side_state(self, side: str) -> ArmState:
+        with self._command_condition:
+            return self._get_left_state() if side == "left" else self._get_right_state()
+
+    def _command_side(self, side: str, **command) -> ArmState:
+        """Barrier-pair one command from each Arm into an atomic physics step."""
+        with self._command_condition:
+            cycle = self._command_cycle
+            if side in self._pending_commands:
+                raise RuntimeError(f"duplicate {side} command in dual control cycle")
+            self._pending_commands[side] = command
+
+            if len(self._pending_commands) == 2:
+                try:
+                    right, left = self._execute_impedance_pair(
+                        self._pending_commands["right"],
+                        self._pending_commands["left"],
+                    )
+                    self._cycle_results = {"right": right, "left": left}
+                    self._cycle_error = None
+                except BaseException as exc:
+                    self._cycle_results = {}
+                    self._cycle_error = exc
+                finally:
+                    self._pending_commands.clear()
+                    self._command_cycle += 1
+                    self._command_condition.notify_all()
+            else:
+                completed = self._command_condition.wait_for(
+                    lambda: self._command_cycle != cycle, timeout=10.0)
+                if not completed:
+                    self._pending_commands.pop(side, None)
+                    raise TimeoutError(
+                        "timed out waiting for the other arm's control frame")
+
+            if self._cycle_error is not None:
+                raise self._cycle_error
+            return self._cycle_results[side]
+
+    def _execute_impedance_pair(self, right, left):
+        targets = np.asarray(right["positions"] + left["positions"], dtype=float)
+        velocities = np.asarray(right["velocities"] + left["velocities"], dtype=float)
+        kps = np.asarray(right["kps"] + left["kps"], dtype=float)
+        kds = np.asarray(right["kds"] + left["kds"], dtype=float)
+        torques = np.asarray(right["torques"] + left["torques"], dtype=float)
+        torque_lim = np.concatenate([self._torque_limits, self._torque_limits])
+
+        t0 = time.monotonic()
+        for _ in range(self._substeps):
+            q = self._data.qpos[:14]
+            v = self._data.qvel[:14]
+            tau = kps * (targets - q) + kds * (velocities - v) + torques
+            np.clip(tau, -torque_lim, torque_lim, out=tau)
+            self._data.qfrc_applied[:14] = tau
+            mujoco.mj_step(self._model, self._data)
+
+        if self._realtime:
+            sleep_time = self._control_dt - (time.monotonic() - t0)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+        if self._viewer is not None:
+            self._viewer.sync()
+
+        self._control_cycles += 1
+        if self.on_step is not None:
+            self.on_step(self)
+        return self._get_right_state(), self._get_left_state()
 
     def reset(self, right_pos=None, left_pos=None):
         """Reset simulation to given joint positions."""
