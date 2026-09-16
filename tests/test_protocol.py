@@ -273,6 +273,46 @@ def test_can_backend_uses_static_mit_codec_without_parameter_reads(
         backend.close(disable=False)
 
 
+def test_can_backend_accepts_injected_transport(monkeypatch):
+    import onero_sdk.can_backend as module
+    from onero_sdk.model_registry import get_model
+
+    class InjectedBus:
+        def __init__(self):
+            self.closed = False
+
+        def flush_rx(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    class FakeMotor:
+        def __init__(self, bus, can_id, response_id, limits):
+            self._can_id = can_id
+            self._limits = limits
+
+        @property
+        def can_id(self):
+            return self._can_id
+
+        @property
+        def limits(self):
+            return self._limits
+
+    bus = InjectedBus()
+    monkeypatch.setattr(module, "Motor", FakeMotor)
+
+    backend = module.CanBackend(
+        channel=None,
+        joint_specs=get_model("A1R").joints,
+        bus=bus,
+    )
+    assert backend._bus is bus
+    backend.close(disable=False)
+    assert bus.closed
+
+
 if __name__ == "__main__":
     test_float_uint_roundtrip()
     test_float_to_uint_example()

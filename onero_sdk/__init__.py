@@ -5,7 +5,7 @@ High-level API (recommended):
     from onero_sdk import Arm, DualArm, ArmState
 
 Low-level API (advanced):
-    from onero_sdk import CanBus, Motor, MotorLimits, MotorState
+    from onero_sdk import CanBus, PythonCanBus, Motor, MotorLimits, MotorState
     from onero_sdk.protocol import encode_mit, decode_feedback
 """
 
@@ -23,7 +23,8 @@ from .safety import SafetyConfig
 from .collision import CollisionConfig, CollisionEvent, CollisionDetector, CollisionResponse
 
 # Low-level API (hardware access)
-from .can_bus import CanBus, CanFrame
+from .can_bus import CanBus, CanFrame, CanTransport
+from .python_can_bus import PythonCanBus
 from .motor import Motor
 from .protocol import MotorLimits, MotorState, MotorError, RegisterID
 
@@ -115,7 +116,7 @@ __all__ = [
     "SafetyConfig",
     "CollisionConfig", "CollisionEvent", "CollisionDetector", "CollisionResponse",
     # Low-level
-    "CanBus", "CanFrame", "Motor",
+    "CanBus", "PythonCanBus", "CanTransport", "CanFrame", "Motor",
     "MotorLimits", "MotorState", "MotorError", "RegisterID",
     # Utilities
     "get_model", "register_model", "ArmModel", "JointSpec",

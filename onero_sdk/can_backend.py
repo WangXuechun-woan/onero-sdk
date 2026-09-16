@@ -12,7 +12,7 @@ import time
 from typing import Optional
 
 from .backend import ArmBackend, ArmState
-from .can_bus import CanBus
+from .can_bus import CanBus, CanTransport
 from .motor import Motor
 from .protocol import (
     MotorLimits, MotorState, MotorError,
@@ -42,19 +42,25 @@ class CanBackend(ArmBackend):
     This reduces per-cycle bus time from 7×RTT to 7×send + 1×batch_recv.
     """
 
-    def __init__(self, channel: str, joint_specs: list[JointSpec],
+    def __init__(self, channel: Optional[str], joint_specs: list[JointSpec],
                  recv_timeout: float = _RECV_TIMEOUT,
                  on_miss: Optional[callable] = None,
-                 on_fault: Optional[callable] = None):
+                 on_fault: Optional[callable] = None,
+                 bus: Optional[CanTransport] = None):
         """
         Args:
-            channel: SocketCAN interface name (e.g. "can0"). Must be UP.
+            channel: SocketCAN interface name (e.g. "can0"). Must be UP when
+                     ``bus`` is omitted. May be None for an injected transport.
             joint_specs: Joint specifications from model registry.
             recv_timeout: Timeout for batch response collection (seconds).
             on_miss: Callback(joint_index, consecutive_misses) on frame miss.
             on_fault: Callback(joint_index, error_code) on motor hardware fault.
+            bus: Optional transport implementing the CanBus interface. Ownership
+                 transfers to this backend and it is closed by close().
         """
-        self._channel = channel
+        if bus is None and channel is None:
+            raise ValueError("channel is required when bus is not provided")
+        self._channel = channel or getattr(bus, "channel", None) or type(bus).__name__
         self._joint_specs = joint_specs
         self._num_joints = len(joint_specs)
         self._recv_timeout = recv_timeout
@@ -62,10 +68,13 @@ class CanBackend(ArmBackend):
         self._on_fault = on_fault
         self._lock = threading.Lock()
 
-        try:
-            self._bus = CanBus(channel)
-        except Exception as e:
-            raise OneroConnectionError(channel, str(e))
+        if bus is not None:
+            self._bus = bus
+        else:
+            try:
+                self._bus = CanBus(channel)
+            except Exception as e:
+                raise OneroConnectionError(channel, str(e))
 
         self._motors: list[Motor] = []
         self._response_ids: list[int] = []

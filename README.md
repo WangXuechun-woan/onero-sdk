@@ -37,6 +37,7 @@ pip install -e ".[ik]"        # + 逆运动学（pinocchio、pink）
 pip install -e ".[dynamics]"  # + 动力学（示教模式、力控）
 pip install -e ".[sim]"       # + MuJoCo 仿真
 pip install -e ".[trajectory]" # + 高级规划（Ruckig、TOPP-RA）
+pip install -e ".[python-can]" # + 可选 python-can/SLCAN 串口直连
 pip install -e ".[full]"      # 全部安装
 ```
 
@@ -45,15 +46,15 @@ pip install -e ".[full]"      # 全部安装
 内置 Web 调试面板，无需额外依赖，打开浏览器即可交互式调试真机或仿真：
 
 ```bash
-# 真机单右臂
-python -m onero_sdk.debugui --arm right --channel slcan0
+# 真机单右臂（channel 是已启动的 SocketCAN 接口名）
+python -m onero_sdk.debugui --arm right --channel can0
 
 # 人形竖直安装、带夹爪补偿的真机单左臂
 python -m onero_sdk.debugui --arm left --channel can0 \
   --mount a1_vertical --gripper-compensation on
 
-# 双臂
-python -m onero_sdk.debugui --arm both --left-channel slcan1 --right-channel slcan0
+# 双臂（接口编号仅是通信配置，不用于推断左右臂型号）
+python -m onero_sdk.debugui --arm both --left-channel can1 --right-channel can0
 
 # 纯仿真（无需硬件）
 python -m onero_sdk.debugui --arm both --sim
@@ -885,21 +886,54 @@ sudo setcap cap_net_admin+ep $(which ip)
 # 注销后重新登录
 ```
 
-### 2. 启动 CAN 接口
+### 2. 启动 SocketCAN 接口
+
+当前 SDK 使用 Linux 原生 SocketCAN（`PF_CAN`）访问总线，不直接打开串口，也不依赖 `python-can`。对于 SLCAN 串口适配器，需要先用 `slcand` 将 `/dev/ttyACM*` 映射为 `can0`、`can1` 等网络接口，然后把该接口名传给 SDK 的 `channel` 参数。
 
 ```bash
-# 使用提供的脚本：
-# 用法: onero-can-up.sh [device] [channel] [bitrate]
-#   device:  串口设备路径（默认: /dev/ttyACM0）
-#   channel: CAN 接口名称（默认: can0）
-#   bitrate: slcand 速率标志（默认: s8 = 1Mbit/s）
-#            s4=125k, s5=250k, s6=500k, s7=800k, s8=1M
-sudo bash configs/onero-can-up.sh                           # 默认: /dev/ttyACM0 can0 s8
-sudo bash configs/onero-can-up.sh /dev/ttyACM1 can1 s8     # 第二条臂使用 can1
+# 使用仓库脚本：
+# 用法: onero-can-up.sh <can_interface> <tty_device_name>
+#   can_interface:   要创建的 SocketCAN 接口名，例如 can0
+#   tty_device_name: /dev 下的设备名，不要带 /dev/ 前缀，例如 ttyACM0
+#
+# 当前脚本固定配置：CAN 1 Mbit/s（slcand -s8），串口 1 Mbaud（-S 1000000）。
+# 脚本没有默认参数，也不接受第三个 bitrate 参数。
+sudo bash configs/onero-can-up.sh can0 ttyACM0
+sudo bash configs/onero-can-up.sh can1 ttyACM1
 
-# 或者手动操作:
-sudo slcand -o -s8 /dev/ttyACM0 can0 && sudo ip link set up can0
+# 确认接口已经创建并处于 UP 状态：
+ip -details link show can0
+ip -details link show can1
+
+# 或者手动启动：
+sudo slcand -o -s8 -t hw -S 1000000 /dev/ttyACM0 can0
+sudo ip link set up can0
 ```
+
+> `slcan0` 既可能被用作 SocketCAN 接口名称，也容易与 SLCAN 串口协议本身混淆。使用 `channel=` 时，SDK 接收的是已经启动的 SocketCAN 接口名；接口叫 `can0`、`slcan0` 或其他名称均可。
+
+### 3. 可选：使用 python-can 直接访问 SLCAN 串口
+
+默认仍推荐上述原生 SocketCAN 路径。若不想运行 `slcand`，可安装可选依赖并为单个 `Arm` 注入独立的 `PythonCanBus`：
+
+```bash
+pip install -e ".[python-can]"
+```
+
+```python
+from onero_sdk import Arm, PythonCanBus
+
+bus = PythonCanBus(
+    interface="slcan",
+    channel="/dev/serial/by-id/usb-CAN_ADAPTER@1000000",
+    bitrate=1_000_000,
+)
+
+# can_bus 的所有权交给 Arm；arm.close() 会关闭串口。
+arm = Arm("A1R", can_bus=bus)
+```
+
+每个 `Arm` 对应一个 CAN transport；双臂由调用方分别创建两个 bus/Arm。设备路径只用于选择通信设备，不用于推断 A1L/A1R。不要让 `slcand` 与 `PythonCanBus` 同时打开同一个串口。
 
 ## 配置文件
 

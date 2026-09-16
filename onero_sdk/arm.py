@@ -60,6 +60,7 @@ class Arm(ArmTransformsMixin):
 
     def __init__(self, model: str = "A1R", channel: Optional[str] = None,
                  backend: Optional[ArmBackend] = None,
+                 can_bus=None,
                  safety: Optional[SafetyConfig] = None,
                  end_effector: Optional[EndEffector] = None,
                  on_error: Optional[Callable] = None,
@@ -71,9 +72,12 @@ class Arm(ArmTransformsMixin):
         """
         Args:
             model: Arm model name (e.g. "A1R", "A1L"). Looked up in model registry.
-            channel: CAN channel name (e.g. "can0"). Creates a CAN backend.
-                     Mutually exclusive with `backend`.
-            backend: Custom backend instance. Mutually exclusive with `channel`.
+            channel: SocketCAN interface name (e.g. "can0"). Creates a CAN
+                     backend using the native transport.
+            backend: Custom backend instance.
+            can_bus: Injected CAN transport, such as PythonCanBus. Ownership is
+                     transferred to the created backend. ``channel``, ``backend``
+                     and ``can_bus`` are mutually exclusive.
             safety: Safety configuration. Default limits active if None.
             end_effector: Optional gripper or dexterous hand attached to this arm.
             on_error: Callback invoked on critical errors. Signature: (OneroError) -> None.
@@ -112,23 +116,25 @@ class Arm(ArmTransformsMixin):
         # Mounting, world-frame, and TCP transforms
         self._init_transforms(mounting, world_frame, base_position)
 
-        # Create backend
-        if backend is not None and channel is not None:
-            raise OneroConfigError("Cannot specify both 'channel' and 'backend'")
+        # Create backend. A transport is per Arm; callers compose two Arm
+        # instances when they need separate left/right devices.
+        selected = sum(value is not None for value in (channel, backend, can_bus))
+        if selected != 1:
+            raise OneroConfigError(
+                "Specify exactly one of 'channel', 'backend', or 'can_bus'")
 
         if backend is not None:
             raw_backend = backend
-        elif channel is not None:
+        else:
             from .can_backend import CanBackend
             raw_backend = CanBackend(
                 channel, self._model_info.joints,
                 on_miss=self._on_can_miss,
                 on_fault=self._on_can_fault,
+                bus=can_bus,
             )
-        else:
-            raise OneroConfigError("Must specify either 'channel' or 'backend'")
 
-        self._channel = channel
+        self._channel = channel or getattr(can_bus, "channel", None)
 
         # Zero-offset layer: translates between user coordinates (URDF zero)
         # and raw motor coordinates. Loaded from disk once at __init__; can be

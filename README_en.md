@@ -36,6 +36,7 @@ pip install -e ".[ik]"        # + inverse kinematics (pinocchio, pink)
 pip install -e ".[dynamics]"  # + dynamics (freedrive, force mode)
 pip install -e ".[sim]"       # + MuJoCo simulation
 pip install -e ".[trajectory]" # + advanced planning (Ruckig, TOPP-RA)
+pip install -e ".[python-can]" # + optional python-can/direct SLCAN transport
 pip install -e ".[full]"      # everything
 ```
 
@@ -858,21 +859,56 @@ sudo setcap cap_net_admin+ep $(which ip)
 # Log out and back in
 ```
 
-### 2. Start CAN interfaces
+### 2. Start SocketCAN interfaces
+
+The SDK currently uses native Linux SocketCAN (`PF_CAN`). It does not open the serial device directly and does not depend on `python-can`. For an SLCAN serial adapter, first use `slcand` to expose `/dev/ttyACM*` as a network interface such as `can0`, then pass that interface name as the SDK `channel`.
 
 ```bash
-# Using the provided scripts:
-# Usage: onero-can-up.sh [device] [channel] [bitrate]
-#   device:  serial device path (default: /dev/ttyACM0)
-#   channel: CAN interface name (default: can0)
-#   bitrate: slcand speed flag (default: s8 = 1Mbit/s)
-#            s4=125k, s5=250k, s6=500k, s7=800k, s8=1M
-sudo bash configs/onero-can-up.sh                           # defaults: /dev/ttyACM0 can0 s8
-sudo bash configs/onero-can-up.sh /dev/ttyACM1 can1 s8     # second arm on can1
+# Repository script:
+# Usage: onero-can-up.sh <can_interface> <tty_device_name>
+#   can_interface:   SocketCAN interface to create, e.g. can0
+#   tty_device_name: device name below /dev, without the /dev/ prefix,
+#                    e.g. ttyACM0
+#
+# The current script is fixed to CAN 1 Mbit/s (slcand -s8) and serial
+# 1 Mbaud (-S 1000000). It has no default arguments and accepts no third
+# bitrate argument.
+sudo bash configs/onero-can-up.sh can0 ttyACM0
+sudo bash configs/onero-can-up.sh can1 ttyACM1
 
-# Or manually:
-sudo slcand -o -s8 /dev/ttyACM0 can0 && sudo ip link set up can0
+# Verify that the interfaces exist and are UP:
+ip -details link show can0
+ip -details link show can1
+
+# Or start one manually:
+sudo slcand -o -s8 -t hw -S 1000000 /dev/ttyACM0 can0
+sudo ip link set up can0
 ```
+
+> `slcan0` may be chosen as a SocketCAN interface name, but it is easily confused with the SLCAN serial protocol itself. When using `channel=`, the SDK expects an already-active SocketCAN interface; `can0`, `slcan0`, or another name all work.
+
+### 3. Optional: access an SLCAN serial device through python-can
+
+Native SocketCAN remains the recommended default. To avoid running `slcand`, install the optional dependency and inject one independent `PythonCanBus` into each `Arm`:
+
+```bash
+pip install -e ".[python-can]"
+```
+
+```python
+from onero_sdk import Arm, PythonCanBus
+
+bus = PythonCanBus(
+    interface="slcan",
+    channel="/dev/serial/by-id/usb-CAN_ADAPTER@1000000",
+    bitrate=1_000_000,
+)
+
+# Arm takes ownership; arm.close() shuts down the serial transport.
+arm = Arm("A1R", can_bus=bus)
+```
+
+Each `Arm` owns one CAN transport. For two arms, create two buses and two `Arm` instances. The device path selects only the communication device and never infers A1L/A1R. Never let `slcand` and `PythonCanBus` open the same serial device simultaneously.
 
 ## Configuration
 

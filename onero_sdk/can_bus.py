@@ -11,7 +11,7 @@ import select
 import time
 import errno
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Protocol
 
 from .exceptions import OneroConnectionError
 
@@ -55,6 +55,19 @@ class CanFrame:
         if self.is_extended:
             return self.can_id & CAN_EFF_MASK
         return self.can_id & CAN_SFF_MASK
+
+
+class CanTransport(Protocol):
+    """Structural interface accepted by CanBackend."""
+
+    def send(self, can_id: int, data: bytes) -> None: ...
+    def recv(self, timeout: float = 0.01) -> Optional[CanFrame]: ...
+    def recv_until(self, target_id: int,
+                   timeout: float = 0.05) -> Optional[CanFrame]: ...
+    def recv_batch(self, target_ids: set[int],
+                   timeout: float = 0.05) -> dict[int, CanFrame]: ...
+    def flush_rx(self) -> None: ...
+    def close(self) -> None: ...
 
 
 class CanBus:
