@@ -40,6 +40,27 @@ pip install -e ".[python-can]" # + optional python-can/direct SLCAN transport
 pip install -e ".[full]"      # everything
 ```
 
+## Debug UI
+
+The built-in browser UI can control hardware or MuJoCo simulation:
+
+```bash
+# Single hardware arm; channel is an already-UP SocketCAN interface
+python -m onero_sdk.debugui --arm right --channel can0
+
+# Canonical vertical left shoulder with gripper gravity compensation
+python -m onero_sdk.debugui --arm left --channel can0 \
+  --mount humanoid_left --gripper-compensation on
+
+# Dual hardware arms; interface numbers never infer arm side
+python -m onero_sdk.debugui --arm both --left-channel can1 --right-channel can0
+
+# Dual-arm simulation
+python -m onero_sdk.debugui --arm both --sim
+```
+
+Open `http://<machine-ip>:8090`. See [docs/guide_debugui.md](docs/guide_debugui.md) for controls and REST endpoints.
+
 ## Quick Start
 
 ### Joint Motion (movej)
@@ -64,6 +85,8 @@ with Arm("A1R", channel="can0") as arm:
 
     arm.home()
 ```
+
+> **Safety**: leaving `with Arm(...)`, calling `arm.close()`, or interpreter exit only detaches communication resources; it does **not** automatically disable the motors. This prevents a gravity-loaded arm from suddenly falling. Call `arm.disable()` or `arm.close(disable=True)` only after the arm is physically supported.
 
 ### Straight-Line Motion (movel)
 
@@ -504,7 +527,7 @@ if arm.last_collision:
           f"magnitude {e.magnitude:.1f}")
 ```
 
-**Coverage**: Automatic collision detection is active during all planned motions (`movej` / `movel` / `movep` / `movec` / `speedj` / `speedl`). Not covered by `servoj` / `servop` / `force_mode` (user-managed).
+**Coverage**: Feedback-torque residual collision detection is active during planned motions (`movej` / `movel` / `movep` / `movec` / `speedj` / `speedl`). It detects/responds after contact; it is **not** geometric path planning or pre-collision checking for tables, walls, or the other arm. `servoj` / `servop` / `force_mode` are not covered (user-managed). Use MoveIt or an application-level planner for geometric avoidance.
 
 **Legacy API** (manual mode, still available):
 
@@ -744,26 +767,32 @@ arm.disable()
 **When to use**: Development and debugging without a physical arm; algorithm validation and parameter tuning; teaching demonstrations; CI/CD automated testing.
 
 ```python
+from onero_sdk import DualArm
 from onero_sdk.dual_mujoco_backend import DualMujocoBackend
-import mujoco.viewer
 
-# Dual-arm simulation with human-like torso + desk
-backend = DualMujocoBackend(model_name='A1', realtime=True)
-viewer = mujoco.viewer.launch_passive(backend._model, backend._data)
-backend._viewer = viewer
+# Both arms share one torso + desk physics scene.
+scene = DualMujocoBackend(model_name="A1R", realtime=True)
+left_backend, right_backend = scene.arm_backends()
+dual = DualArm.create(
+    left_backend=left_backend,
+    right_backend=right_backend,
+    arm_spacing=0.24,
+)
+dual.enable()
 
-# Symmetric motion: opposite joint signs = mirror movement
-import numpy as np
-r_forward = np.array([1.5, 0, 0, 0, 0, 0, 0])
-l_forward = -r_forward  # mirror
-backend.movej(r_forward, l_forward, duration=2.0)
+# Paired realtime mirror command: q_left = -q_right.
+# See examples/dual_arm_mujoco_demo.py for a smooth table-safe sequence.
+right = [0.0] * 7
+dual.servoj([-q for q in right], right)
 ```
+
+Do not call `DualMujocoBackend.movej()` as a substitute for the SDK control stack. Use `arm_backends()` and execute through `DualArm` / `Arm`, preserving safety, limits, gravity, and control behavior. MuJoCo contacts are enabled in this scene, but the SDK does not provide general environment-aware collision planning.
 
 ### Dual Arm
 
-**What it does**: `DualArm` wraps coordinated dual-arm control with shared time synchronization, safety monitoring, and lifecycle management. Supports symmetric motion, independent motion, and coordinated tasks.
+**What it does**: `DualArm` is a convenience wrapper around two `Arm` instances. It provides a shared world-frame convention, parallel dispatch, and lifecycle helpers. Each arm retains its own safety monitor; ordinary blocking calls run in two threads and are not a hard-real-time synchronizer.
 
-**When to use**: When two arms must work together. Examples: cooperative handling of large workpieces, one arm holding while the other operates, symmetric actions (e.g., twisting a cap), and tasks requiring inter-arm collision avoidance.
+**When to use**: Symmetric motions, independent operations, and application-level coordinated tasks. `DualArm` does **not** provide inter-arm or environment geometry collision avoidance. Cooperative handling, confined-space motion, and table tasks require collision-free paths from the application or MoveIt.
 
 **Demo**: Two arms execute mirror-symmetric motion, demonstrating synchronized dual-arm coordination.
 

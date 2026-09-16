@@ -51,7 +51,7 @@ python -m onero_sdk.debugui --arm right --channel can0
 
 # 人形竖直安装、带夹爪补偿的真机单左臂
 python -m onero_sdk.debugui --arm left --channel can0 \
-  --mount a1_vertical --gripper-compensation on
+  --mount humanoid_left --gripper-compensation on
 
 # 双臂（接口编号仅是通信配置，不用于推断左右臂型号）
 python -m onero_sdk.debugui --arm both --left-channel can1 --right-channel can0
@@ -87,6 +87,8 @@ with Arm("A1R", channel="can0") as arm:
 
     arm.home()
 ```
+
+> **安全提示**：`with Arm(...)` 退出、`arm.close()` 和解释器退出只关闭通信资源，**不会自动失能电机**，避免重力负载下突然掉臂。只有在机械臂得到可靠物理支撑后，才调用 `arm.disable()` 或 `arm.close(disable=True)`。
 
 ### 末端直线运动（movel）
 
@@ -529,7 +531,7 @@ if arm.last_collision:
           f"magnitude {e.magnitude:.1f}")
 ```
 
-**覆盖范围**：自动碰撞检测在所有规划运动中生效（`movej` / `movel` / `movep` / `movec` / `speedj` / `speedl`）。`servoj` / `servop` / `force_mode` 不覆盖（用户自行管理）。
+**覆盖范围**：基于反馈力矩残差的碰撞检测在所有规划运动中生效（`movej` / `movel` / `movep` / `movec` / `speedj` / `speedl`）。它是接触后的检测/停止机制，**不是**桌面、墙体、双臂之间等环境几何体的路径规划或预碰撞检查。`servoj` / `servop` / `force_mode` 不覆盖（用户自行管理）；需要几何避障时应使用 MoveIt 或应用层规划器。
 
 **旧版 API**（手动模式，仍可用）：
 
@@ -771,26 +773,32 @@ arm.disable()
 **适用场景**：开发调试阶段无需连接真实机械臂；算法验证和参数调优；教学演示；CI/CD 自动化测试。
 
 ```python
+from onero_sdk import DualArm
 from onero_sdk.dual_mujoco_backend import DualMujocoBackend
-import mujoco.viewer
 
-# 双臂仿真：人体躯干 + 桌面场景
-backend = DualMujocoBackend(model_name='A1', realtime=True)
-viewer = mujoco.viewer.launch_passive(backend._model, backend._data)
-backend._viewer = viewer
+# 双臂仿真：共享同一个人体躯干 + 桌面物理场景
+scene = DualMujocoBackend(model_name="A1R", realtime=True)
+left_backend, right_backend = scene.arm_backends()
+dual = DualArm.create(
+    left_backend=left_backend,
+    right_backend=right_backend,
+    arm_spacing=0.24,
+)
+dual.enable()
 
-# 对称运动：反号 = 镜像动作
-import numpy as np
-r_forward = np.array([1.5, 0, 0, 0, 0, 0, 0])
-l_forward = -r_forward  # 镜像
-backend.movej(r_forward, l_forward, duration=2.0)
+# 实时镜像控制必须每周期成对提交；q_left = -q_right。
+# 完整的平滑、桌面安全演示见 examples/dual_arm_mujoco_demo.py。
+right = [0.0] * 7
+dual.servoj([-q for q in right], right)
 ```
+
+不要直接调用 `DualMujocoBackend.movej()` 来代替 SDK 控制链。共享场景的公开入口是 `arm_backends()`，上层仍通过 `DualArm` / `Arm` 执行安全、限位、重力和控制逻辑。示例场景启用了 MuJoCo 接触，但 SDK 不提供任意环境的通用碰撞路径规划。
 
 ### 双臂控制
 
-**特性说明**：`DualArm` 封装了双臂协调控制，两条臂共享时间同步、安全监控和生命周期管理。支持对称运动、独立运动和协调运动。
+**特性说明**：`DualArm` 是两个 `Arm` 的便利封装，提供共享 world 坐标约定、并行下发和生命周期管理。每条臂仍使用自己的安全监控；普通双臂阻塞调用由两个线程并行执行，不构成硬实时同步器。
 
-**适用场景**：当需要两条臂配合完成任务时使用。例如：双臂协作搬运大型工件、一臂固定一臂操作、对称动作（如拧瓶盖）、以及需要臂间避碰的复杂任务。
+**适用场景**：用于双臂对称动作、独立操作和上层协调任务。`DualArm` 本身**不提供臂间或环境几何避碰**；双臂搬运、狭窄空间和桌面任务必须由应用或 MoveIt 规划无碰撞路径。
 
 **Demo 演示**：两条臂执行镜像对称运动，展示双臂同步协调。
 
@@ -1126,6 +1134,7 @@ logging.getLogger("onero_sdk").setLevel(logging.DEBUG)
 - `examples/blending.py` — 多路点轨迹 + blending
 - `examples/gripper_pick_place.py` — 机械臂 + 夹爪抓取
 - `examples/dual_arm.py` — 双臂控制
+- `examples/dual_arm_mujoco_demo.py` — 共享物理场景双臂仿真（公开 DualArm 控制链、桌面接触检查）
 - `examples/mit_control.py` — 底层单电机 MIT 控制
 - `examples/position_control.py` — 位置-速度模式
 - `examples/calibration_demo.py` — 动力学参数辨识（MuJoCo 仿真）

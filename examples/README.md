@@ -287,7 +287,8 @@ ros2/01_joint_states → ros2/02_movej_service → ros2/03_trajectory → moveit
 | `freedrive_teach.py` | 零力示教模式 |
 | `gripper_pick_place.py` | 夹爪抓取 |
 | `mit_control.py` | MIT 阻抗底层控制 |
-| `mujoco_demo.py` | MuJoCo 仿真演示 |
+| `mujoco_demo.py` | 单臂 MuJoCo 仿真演示 |
+| `dual_arm_mujoco_demo.py` | 双臂共享场景仿真；通过公开 `DualArm` 控制链并检查桌面接触 |
 | `position_control.py` | 位置控制模式 |
 | `servo_control.py` | 伺服控制 |
 | `speed_control.py` | 速度控制模式 |

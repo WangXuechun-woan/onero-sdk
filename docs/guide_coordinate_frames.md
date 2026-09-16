@@ -113,12 +113,12 @@ dual = DualArm.create(left_channel="can0", right_channel="can1",
 | Joint | A1L 正轴 | A1R 正轴 | 说明 |
 |---|---:|---:|---|
 | J1 | +Zb | +Zb | 肩部/基座 yaw |
-| J2 | -Yb | -Yb | 肩部抬升/展开 |
-| J3 | +Xb | -Xb | 左右镜像 |
+| J2 | +Yb | -Yb | 当前左右 URDF 在此轴符号不同 |
+| J3 | -Xb | -Xb | 两侧 URDF 相同 |
 | J4 | +Zb | +Zb | 肘/腕链中的旋转轴 |
-| J5 | +Xb | -Xb | 左右镜像 |
+| J5 | -Xb | -Xb | 两侧 URDF 相同 |
 | J6 | -Zb | -Zb | 腕部旋转轴 |
-| J7 | +Xb | -Xb | 左右镜像 |
+| J7 | -Xb | -Xb | 两侧 URDF 相同 |
 
 ## 应该给正还是给负？
 
@@ -147,7 +147,7 @@ J2 正方向是向外展开。
 因为“向外”依赖安装方向、左右臂、观察视角。建议写成：
 
 ```text
-J2 的正轴为 base -Y。正角度按右手定则定义。对于双臂对称展开，使用 q_left = -q_right。
+A1R J2 的正轴为 base -Y，A1L J2 为 base +Y。正角度按右手定则定义。对于采用 `humanoid_left/right` 安装矩阵的双臂对称展开，使用 `q_left = -q_right`。
 ```
 
 或者写成用户更容易操作的形式：

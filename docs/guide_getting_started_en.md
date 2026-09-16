@@ -144,14 +144,18 @@ The SDK includes built-in safety:
 - **Joint limits**: auto-clamped to model limits
 - **Velocity limits**: commands exceeding limits are scaled down
 - **Emergency stop**: `arm.emergency_stop()` immediately halts motion
-- **Auto-disable on exit**: if you forget `arm.disable()`, it's called automatically at interpreter exit
+- **Safe detach**: context-manager exit, `arm.close()`, and interpreter exit release communication resources without automatically disabling a gravity-loaded arm
 
-Recommended pattern:
+Recommended pattern when explicit motor disable is required:
 ```python
-with Arm("A1R", channel="can0") as arm:
-    arm.movej([...])
-    # arm.disable() called automatically, even on exceptions
+arm = Arm("A1R", channel="can0")
+arm.enable()
+arm.movej([...])
+# First provide reliable physical support, then remove torque explicitly:
+arm.close(disable=True)
 ```
+
+If a `with Arm(...)` block exits without explicit disable, it only detaches the transport; the SDK intentionally does not remove motor torque automatically.
 
 ## API Quick Reference
 

@@ -17,7 +17,7 @@ python -m onero_sdk.debugui --arm left --channel slcan1
 
 # 真机 — 人形竖直安装且带夹爪补偿的单左臂
 python -m onero_sdk.debugui --arm left --channel can0 \
-  --mount a1_vertical --gripper-compensation on
+  --mount humanoid_left --gripper-compensation on
 
 # 真机 — 双臂
 python -m onero_sdk.debugui --arm both \
@@ -31,6 +31,8 @@ python -m onero_sdk.debugui --arm right --channel slcan0 --port 8090 --host 0.0.
 ```
 
 启动后打开 `http://<机器IP>:8090` 即可访问。
+
+> Debug UI 的 3D 场景用于状态显示和目标交互，不是环境碰撞规划器。MoveJ/MoveL/MoveP 会检查关节、速度、IK 连续性等 SDK 安全条件，但不会根据网页中的桌面、墙体或另一条机械臂自动规划避障路径；真机目标必须由操作者确认工作空间安全。
 
 ### 嵌入到脚本
 
@@ -49,9 +51,14 @@ server = start_lab(arm, port=8090, block=False)
 # 继续执行其他逻辑 …
 arm.movej([0] * 7)
 
-# 关闭时
+# 先关闭 UI 服务
 server.close()
+# 二选一：
+arm.close()               # 只释放通信资源，不失能
+# arm.close(disable=True) # 仅在机械臂已可靠支撑后使用
 ```
+
+> **真机安全**：关闭 UI、调用 `arm.close()`、退出 `with` 或解释器退出都不会自动失能电机，避免重力负载下突然掉臂。只有在机械臂已得到可靠物理支撑后，才调用 `arm.disable()` 或 `arm.close(disable=True)`。
 
 双臂版本：
 
@@ -122,7 +129,7 @@ start_lab(arm, port=8090, block=True)
 - **Auto**：打勾后拖动滑条自动发送（300ms 节流），松手立即发送
 - **Apply**：手动触发一次发送
 - **Ghost**：开关幽灵预览
-- **speed**：运动速度（m/s），传给 `arm.movej(speed=…)`
+- **speed**：关节速度（rad/s），传给 `arm.movej(speed=…)`；A1 自动限制 J1–J4 ≤ 3 rad/s、J5–J7 ≤ 6 rad/s
 
 #### Servo 标签页
 

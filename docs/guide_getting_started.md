@@ -39,6 +39,8 @@ arm.disable()
 arm = Arm("A1R", channel="can0")  # 替换 backend 参数
 ```
 
+> **真机关闭安全**：`arm.close()`、上下文退出和解释器退出只释放通信资源，不会自动失能电机。只有在机械臂得到可靠物理支撑后，才调用 `arm.disable()` 或 `arm.close(disable=True)`；否则重力负载可能突然掉落。
+
 ## 核心概念
 
 ### 坐标系
