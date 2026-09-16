@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SafetyConfig:
     """Configuration for safety limits."""
-    max_velocity: float = 5.0           # rad/s per joint
+    max_velocity: float = 6.0           # global ceiling; model limits may be lower
     max_delta_per_step: float = 0.03    # rad per control step
     control_freq: float = 200.0         # Hz — control loop frequency
     timeout_frames: int = 10            # consecutive missed frames before emergency stop
@@ -62,10 +62,19 @@ class SafetyMonitor:
     def __init__(self, num_joints: int, joint_limits: list[tuple[float, float]],
                  config: SafetyConfig = None,
                  on_error: Optional[Callable] = None,
-                 on_stop: Optional[Callable] = None):
+                 on_stop: Optional[Callable] = None,
+                 joint_velocity_limits: Optional[list[float]] = None):
         self._num_joints = num_joints
         self._joint_limits = joint_limits  # [(p_min, p_max), ...] per joint
         self._config = config or SafetyConfig()
+        if joint_velocity_limits is None:
+            joint_velocity_limits = [self._config.max_velocity] * num_joints
+        if len(joint_velocity_limits) != num_joints:
+            raise ValueError("joint_velocity_limits length must match num_joints")
+        self._joint_velocity_limits = [
+            min(float(limit), self._config.max_velocity)
+            for limit in joint_velocity_limits
+        ]
         self._on_error = on_error
         self._on_stop = on_stop  # callable to immediately disable motors
 
@@ -94,8 +103,13 @@ class SafetyMonitor:
 
     @property
     def max_velocity(self) -> float:
-        """Configured per-joint velocity ceiling in rad/s."""
-        return self._config.max_velocity
+        """Largest effective joint velocity ceiling in rad/s."""
+        return max(self._joint_velocity_limits, default=self._config.max_velocity)
+
+    @property
+    def joint_velocity_limits(self) -> tuple[float, ...]:
+        """Effective per-joint velocity ceilings in rad/s."""
+        return tuple(self._joint_velocity_limits)
 
     @property
     def on_error(self) -> Optional[Callable]:
@@ -247,18 +261,35 @@ class SafetyMonitor:
             else:
                 self._tracking_error_soft_count = 0
 
-    def clamp_velocity(self, velocities: list[float]) -> list[float]:
-        """Clamp joint velocities to max_velocity. Returns clamped velocities."""
+    def clamp_velocity(self, velocities: list[float],
+                       positions: Optional[list[float]] = None) -> list[float]:
+        """Safely scale joint velocities, preserving their relative direction.
+
+        The vector is scaled as a whole to satisfy the global velocity ceiling.
+        When measured positions are supplied, it is scaled again so the next
+        control step cannot cross any configured joint limit.
+        """
         if not self._config.enabled:
             return velocities
-        limit = self._config.max_velocity
-        result = []
-        for v in velocities:
-            if not math.isfinite(v):
-                result.append(0.0)
-            else:
-                result.append(max(-limit, min(limit, v)))
-        return result
+        finite = [v if math.isfinite(v) else 0.0 for v in velocities]
+        scale = 1.0
+        for velocity, limit in zip(finite, self._joint_velocity_limits):
+            if velocity:
+                scale = min(scale, limit / abs(velocity))
+
+        if positions is not None:
+            dt = 1.0 / self._config.control_freq
+            for q, v, (lower, upper) in zip(positions, finite, self._joint_limits):
+                scaled_v = v * scale
+                if scaled_v > 0:
+                    room = max(0.0, upper - q)
+                    scale = min(scale, room / (v * dt))
+                elif scaled_v < 0:
+                    room = max(0.0, q - lower)
+                    scale = min(scale, room / (-v * dt))
+
+        scale = max(0.0, min(1.0, scale))
+        return [v * scale for v in finite]
 
     def record_response(self, joint_index: int, received: bool) -> None:
         """Record whether a joint responded this cycle."""

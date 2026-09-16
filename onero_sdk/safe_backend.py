@@ -52,19 +52,17 @@ class SafeBackend(ArmBackend):
                 kps: list[float], kds: list[float],
                 torques: list[float], hold: bool = False) -> ArmState:
         self._check_emergency_stop()
+        # Velocity is a first-class safety boundary even for MIT impedance
+        # commands.  speedj/speedl use command() so limiting only the native
+        # command_velocity() path would leave their feed-forward velocity
+        # completely unchecked.
+        safe_vel = self._safety.clamp_velocity(velocities, positions=positions)
         if hold:
             clamped_pos = self._safety.clamp_joint_limits(positions)
-            cmd_vel = velocities
+            cmd_vel = safe_vel
         else:
             clamped_pos = self._safety.clamp_target(positions)
-            max_rate = self._safety.max_rate
-            cmd_vel = []
-            for i in range(len(positions)):
-                if abs(clamped_pos[i] - positions[i]) < 1e-6:
-                    cmd_vel.append(velocities[i])
-                else:
-                    capped = max(-max_rate, min(max_rate, velocities[i]))
-                    cmd_vel.append(capped)
+            cmd_vel = safe_vel
         clamped_tau = self._clamp_torques(torques)
         state = self._inner.command(
             positions=clamped_pos,
@@ -111,10 +109,5 @@ class SafeBackend(ArmBackend):
     def get_state(self) -> ArmState:
         return self._inner.get_state()
 
-    def close(self, disable: bool = True) -> None:
-        if disable:
-            # Keep compatibility with third-party/custom backends whose
-            # historical close() method has no keyword arguments.
-            self._inner.close()
-        else:
-            self._inner.close(disable=False)
+    def close(self, disable: bool = False) -> None:
+        self._inner.close(disable=disable)

@@ -929,7 +929,8 @@ bus = PythonCanBus(
     bitrate=1_000_000,
 )
 
-# can_bus 的所有权交给 Arm；arm.close() 会关闭串口。
+# can_bus 的所有权交给 Arm；arm.close() 会关闭串口，但不会自动 disable 电机。
+# 机械臂得到可靠支撑后，才可显式调用 arm.disable() 或 arm.close(disable=True)。
 arm = Arm("A1R", can_bus=bus)
 ```
 
@@ -953,7 +954,7 @@ mounting: "side_mount_right"
 world_frame: true
 base_position: [0, -0.15, 0]
 safety:
-  max_velocity: 5.0
+  max_velocity: 6.0  # 全局上限；A1 模型仍按 J1-J4=3、J5-J7=6 rad/s 限制
   max_delta_per_step: 0.03
   timeout_frames: 10
 ```

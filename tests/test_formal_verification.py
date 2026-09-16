@@ -340,7 +340,7 @@ class _TrackingBackend(ArmBackend):
     def get_state(self):
         return ArmState(joints=list(self._pos), velocities=[0.0]*7, torques=[0.0]*7)
 
-    def close(self):
+    def close(self, disable=False):
         pass
 
 

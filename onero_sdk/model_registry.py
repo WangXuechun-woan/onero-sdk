@@ -112,6 +112,9 @@ _CAN_CONFIG = {
         "encoding_p_max": 12.5,  # Motor firmware PMAX register (encoder range)
         "codec_v_max": 45.0,
         "codec_t_max": 30.0,
+        # Validated output-joint speed limits: DM4340 shoulder/elbow group
+        # (J1-J4) and DM4310 wrist group (J5-J7).
+        "joint_velocity_limits": [3.0, 3.0, 3.0, 3.0, 6.0, 6.0, 6.0],
         "default_kp": 50.0,
         "default_kd": 1.0,
         "control_freq": 200.0,
@@ -158,7 +161,10 @@ def _build_model(name: str, variant: str = "r") -> ArmModel:
         # SolidWorks URDF exporter leaves effort=0 / velocity=0 by default.
         # Fall back to safe simulation/hardware ceilings so encoding never
         # divides by zero.  Real limits are enforced by the safety layer.
-        v_max = lim["v_max"] if lim["v_max"] > 0 else 30.0   # rad/s
+        urdf_v_max = lim["v_max"] if lim["v_max"] > 0 else float("inf")
+        hardware_v_max = can_cfg.get(
+            "joint_velocity_limits", [30.0] * num_joints)[i]
+        v_max = min(urdf_v_max, hardware_v_max)
         t_max = lim["t_max"] if lim["t_max"] > 0 else 15.0   # Nm
         joints.append(JointSpec(
             p_min=lim["p_min"],

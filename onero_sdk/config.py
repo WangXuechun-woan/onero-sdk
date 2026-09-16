@@ -26,7 +26,7 @@ def load_arm_config(path: str) -> dict:
         kd: 1.0
         urdf: "path/to/arm.urdf"
         safety:
-          max_velocity: 5.0
+          max_velocity: 6.0
           max_delta_per_step: 0.03
           timeout_frames: 10
           enabled: true

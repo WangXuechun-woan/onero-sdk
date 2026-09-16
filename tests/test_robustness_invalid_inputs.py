@@ -402,7 +402,7 @@ class _RecordingBackend(ArmBackend):
     def get_state(self):
         return ArmState(joints=[0.0]*7, velocities=[0.0]*7, torques=[0.0]*7)
 
-    def close(self):
+    def close(self, disable=False):
         pass
 
 

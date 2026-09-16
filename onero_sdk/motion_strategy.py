@@ -202,21 +202,32 @@ def circular_arc_frames(ctx: MotionContext, center, v0, normal, total_angle,
         )
 
 
-def velocity_joint_frames(target_vel: list, ramp_steps: int, hold_steps: int, dt: float):
+def velocity_joint_frames(target_vel: list, ramp_steps: int, hold_steps: int,
+                          dt: float, start_vel: Optional[list] = None,
+                          ramp_down_steps: Optional[int] = None):
+    start = list(start_vel) if start_vel is not None else [0.0] * len(target_vel)
+    down_steps = ramp_steps if ramp_down_steps is None else ramp_down_steps
     for step in range(ramp_steps):
         alpha = (step + 1) / max(ramp_steps, 1)
-        yield VelocityFrame(velocities=[alpha * v for v in target_vel], dt=dt)
+        yield VelocityFrame(
+            velocities=[s + alpha * (v - s) for s, v in zip(start, target_vel)],
+            dt=dt,
+        )
     for step in range(hold_steps):
         yield VelocityFrame(velocities=target_vel, dt=dt)
-    for step in range(ramp_steps):
-        alpha = 1.0 - (step + 1) / max(ramp_steps, 1)
+    for step in range(down_steps):
+        alpha = 1.0 - (step + 1) / max(down_steps, 1)
         yield VelocityFrame(velocities=[alpha * v for v in target_vel], dt=dt)
 
 
 def velocity_cartesian_frames(twist, ramp_steps: int, hold_steps: int, dt: float,
                               get_joints_fn, jacobian_solve_fn,
                               twist_fn=None,
-                              singularity_policy: Optional[SingularityPolicy] = None):
+                              singularity_policy: Optional[SingularityPolicy] = None,
+                              start_velocity=None,
+                              max_acceleration: Optional[float] = None,
+                              velocity_limit_fn=None,
+                              ramp_down_steps: Optional[int] = None):
     """
     twist_fn: if provided, called each tick to get current base-frame twist.
 
@@ -226,6 +237,25 @@ def velocity_cartesian_frames(twist, ramp_steps: int, hold_steps: int, dt: float
         aborts (OneroSafetyError) below hard threshold.
     """
     warned = [False]
+    previous_velocity = np.asarray(
+        start_velocity if start_velocity is not None else np.zeros(len(get_joints_fn())),
+        dtype=float,
+    )
+
+    def _bounded(q, target):
+        nonlocal previous_velocity
+        target = np.asarray(target, dtype=float)
+        if velocity_limit_fn is not None:
+            target = np.asarray(velocity_limit_fn(q, target), dtype=float)
+        if max_acceleration is not None:
+            delta = target - previous_velocity
+            peak = float(np.max(np.abs(delta))) if delta.size else 0.0
+            max_delta = max_acceleration * dt
+            if peak > max_delta:
+                delta *= max_delta / peak
+            target = previous_velocity + delta
+        previous_velocity = target
+        return target
 
     def _describe(q):
         if singularity_policy is None or singularity_policy.classify_fn is None:
@@ -263,17 +293,26 @@ def velocity_cartesian_frames(twist, ramp_steps: int, hold_steps: int, dt: float
             return dq * scale
         return dq
 
-    for step in range(ramp_steps):
-        alpha = (step + 1) / max(ramp_steps, 1)
+    for _ in range(ramp_steps):
+        q = get_joints_fn()
         current_twist = twist_fn() if twist_fn else twist
-        joint_vel = _solve(get_joints_fn(), alpha * current_twist)
+        joint_vel = _bounded(q, _solve(q, current_twist))
         yield VelocityFrame(velocities=joint_vel.tolist(), dt=dt)
-    for step in range(hold_steps):
+    for _ in range(hold_steps):
+        q = get_joints_fn()
         current_twist = twist_fn() if twist_fn else twist
-        joint_vel = _solve(get_joints_fn(), current_twist)
+        joint_vel = _bounded(q, _solve(q, current_twist))
         yield VelocityFrame(velocities=joint_vel.tolist(), dt=dt)
-    for step in range(ramp_steps):
-        alpha = 1.0 - (step + 1) / max(ramp_steps, 1)
-        current_twist = twist_fn() if twist_fn else twist
-        joint_vel = _solve(get_joints_fn(), alpha * current_twist)
+    down_steps = ramp_steps if ramp_down_steps is None else ramp_down_steps
+    for _ in range(down_steps):
+        q = get_joints_fn()
+        joint_vel = _bounded(q, np.zeros_like(previous_velocity))
+        yield VelocityFrame(velocities=joint_vel.tolist(), dt=dt)
+    # A changing Jacobian can amplify joint velocity during the hold phase.
+    # Continue the zero target until the acceleration-bounded command really
+    # reaches rest rather than handing a residual velocity to position hold.
+    while (max_acceleration is not None
+           and np.max(np.abs(previous_velocity)) > 1e-9):
+        q = get_joints_fn()
+        joint_vel = _bounded(q, np.zeros_like(previous_velocity))
         yield VelocityFrame(velocities=joint_vel.tolist(), dt=dt)

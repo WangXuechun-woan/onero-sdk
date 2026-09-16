@@ -280,7 +280,7 @@ class CanBackend(ArmBackend):
 
         return ArmState(joints=joints, velocities=vels, torques=torqs, timestamp=ts)
 
-    def close(self, disable: bool = True) -> None:
+    def close(self, disable: bool = False) -> None:
         with self._lock:
             if disable and self._enabled:
                 for motor in self._motors:

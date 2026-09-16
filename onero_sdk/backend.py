@@ -76,12 +76,12 @@ class ArmBackend(ABC):
         ...
 
     @abstractmethod
-    def close(self, disable: bool = True) -> None:
+    def close(self, disable: bool = False) -> None:
         """Release resources (close sockets, etc.).
 
-        ``disable=True`` preserves the normal safe shutdown behavior.  A
-        caller that has an explicit reason to leave the drives enabled while
-        detaching the transport may pass ``disable=False``.
+        The default only detaches the transport. Automatically removing motor
+        torque can make a gravity-loaded arm fall. Pass ``disable=True`` only
+        when the arm is physically supported and disabling is intentional.
         """
         ...
 

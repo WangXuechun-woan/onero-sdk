@@ -186,7 +186,7 @@ class MujocoBackend(ArmBackend):
     def get_state(self) -> ArmState:
         return self._get_state()
 
-    def close(self, disable: bool = True) -> None:
+    def close(self, disable: bool = False) -> None:
         if disable:
             self._data.qfrc_applied[:self._nq] = 0.0
         self._enabled = False

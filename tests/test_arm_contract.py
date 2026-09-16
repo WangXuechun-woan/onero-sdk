@@ -13,6 +13,39 @@ from onero_sdk.backend import ArmState
 from onero_sdk.mujoco_backend import MujocoBackend
 
 
+class TestShutdownSafety:
+    def test_close_does_not_disable_enabled_arm_by_default(self):
+        """Detaching transport must not make a gravity-loaded arm fall."""
+        from unittest.mock import MagicMock
+
+        backend = MagicMock()
+        backend.num_joints = 7
+        backend.enable.return_value = ArmState(
+            joints=[0.0] * 7, velocities=[0.0] * 7, torques=[0.0] * 7)
+        arm = Arm("A1R", backend=backend)
+        arm.enable()
+
+        arm.close()
+
+        backend.disable.assert_not_called()
+        backend.close.assert_called_once_with(disable=False)
+
+    def test_close_can_explicitly_disable_supported_arm(self):
+        from unittest.mock import MagicMock
+
+        backend = MagicMock()
+        backend.num_joints = 7
+        backend.enable.return_value = ArmState(
+            joints=[0.0] * 7, velocities=[0.0] * 7, torques=[0.0] * 7)
+        arm = Arm("A1R", backend=backend)
+        arm.enable()
+
+        arm.close(disable=True)
+
+        backend.disable.assert_called_once_with()
+        backend.close.assert_called_once_with(disable=True)
+
+
 # ─── API Surface Tests ──────────────────────────────────────────────────────
 
 class TestArmSatisfiesProtocol:

@@ -904,7 +904,9 @@ bus = PythonCanBus(
     bitrate=1_000_000,
 )
 
-# Arm takes ownership; arm.close() shuts down the serial transport.
+# Arm takes ownership; arm.close() shuts down the serial transport but does not
+# disable the motors. Only call arm.disable() or arm.close(disable=True) after
+# the arm is physically supported.
 arm = Arm("A1R", can_bus=bus)
 ```
 
@@ -928,7 +930,7 @@ mounting: "side_mount_right"
 world_frame: true
 base_position: [0, -0.15, 0]
 safety:
-  max_velocity: 5.0
+  max_velocity: 6.0  # global cap; A1 still enforces J1-J4=3, J5-J7=6 rad/s
   max_delta_per_step: 0.03
   timeout_frames: 10
 ```

@@ -82,7 +82,7 @@ class RecordingBackend(ArmBackend):
     def get_state(self):
         return self._raw_state
 
-    def close(self):
+    def close(self, disable=False):
         self.closed = True
 
 

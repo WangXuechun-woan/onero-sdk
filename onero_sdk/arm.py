@@ -168,6 +168,7 @@ class Arm(ArmTransformsMixin):
             config=safety or SafetyConfig(),
             on_error=on_error,
             on_stop=lambda: self._backend.disable(),
+            joint_velocity_limits=[spec.v_max for spec in self._model_info.joints],
         )
 
         # Wrap backend with safety layer (transparent clamping)
@@ -238,24 +239,30 @@ class Arm(ArmTransformsMixin):
             cache_interval=10,
         )
 
-        # Cartesian singularity handling — disabled by default (opt-in via
-        # arm.set_singularity_policy(...)) so existing behavior (silent DLS
-        # damping) is preserved. Once enabled, speedl and Cartesian teleop
-        # paths will warn + slow near singularity and abort at the hard limit.
-        self._singularity_policy = None
+        # Cartesian velocity safety is enabled by default. Near singularities
+        # speedl slows continuously and clamps to zero at the hard threshold;
+        # callers may opt into raising instead via set_singularity_policy().
+        self._singularity_policy = SingularityPolicy(
+            warn_threshold=0.03,
+            hard_threshold=0.005,
+            abort_on_hard=False,
+        )
 
-        # Safety: auto-disable on interpreter exit if user forgets
+        # Never auto-disable at interpreter exit: removing motor torque from a
+        # gravity-loaded arm can cause an immediate uncontrolled drop.  Detach
+        # the transport only; callers that have physically supported the arm
+        # may opt in explicitly via disable() or close(disable=True).
         self._atexit_registered = True
         weakself = weakref.ref(self)
         def _cleanup():
             arm = weakself()
             if arm is not None and arm._enabled:
                 logger.warning(
-                    "Arm was not disabled before exit. "
-                    "Calling disable() automatically. "
-                    "Use 'with Arm(...) as arm:' or try/finally to avoid this.")
+                    "Arm is still enabled at exit; detaching transport without "
+                    "disabling motors. Explicitly call disable() only when the "
+                    "arm is physically supported.")
                 try:
-                    arm.disable()
+                    arm.close(disable=False)
                 except Exception:
                     pass
         atexit.register(_cleanup)
@@ -405,14 +412,13 @@ class Arm(ArmTransformsMixin):
             self._realtime_status = None
         logger.info("Arm disabled")
 
-    def close(self, disable: bool = True) -> None:
-        """Release resources, optionally without sending a disable command.
+    def close(self, disable: bool = False) -> None:
+        """Release resources and, by default, leave motor torque enabled.
 
-        The default remains the safe historical behavior: stop freedrive,
-        disable the arm, and then close the transport.  ``disable=False`` is
-        an explicit detach operation for supervised hardware workflows that
-        intentionally leave the drives enabled.  It must not be used on an
-        unattended or faulted arm.
+        Automatically disabling a gravity-loaded arm can cause an immediate
+        drop, so ``close()`` and context-manager exit only detach the transport.
+        Pass ``disable=True`` (or call :meth:`disable`) only after the arm is
+        physically supported and removing torque is intentional.
         """
         try:
             # Stop freedrive thread before disabling to avoid socket I/O on closed bus
@@ -785,7 +791,9 @@ class Arm(ArmTransformsMixin):
                     compute_synchronized_duration,
                 )
                 v_max_per = speed if speed is not None else 2.0
-                v_maxs = [v_max_per] * n
+                v_maxs = [
+                    min(v_max_per, spec.v_max) for spec in self._model_info.joints
+                ]
                 a_maxs = [accel] * n
 
                 # Compute synchronized profiles for all joints
@@ -797,7 +805,7 @@ class Arm(ArmTransformsMixin):
                     j_max = accel * 10.0
                     profiles = []
                     for i in range(n):
-                        profiles.append(SCurveProfile(deltas[i], v_max_per, accel, j_max))
+                        profiles.append(SCurveProfile(deltas[i], v_maxs[i], accel, j_max))
                     s_dur = max(p.duration for p in profiles)
                     actual_dur = max(actual_dur, s_dur)
                     actual_steps = max(1, int(actual_dur / dt))
@@ -1201,21 +1209,20 @@ class Arm(ArmTransformsMixin):
             dt = 1.0 / self._control_freq
 
             velocities = self._validate_joints(velocities, param_name="velocities")
+            self._validate_velocity_timing(acceleration, duration, "speedj")
 
-            target_vel = list(velocities)
-
-            max_vel_delta = max(abs(v) for v in target_vel) if target_vel else 0
-            ramp_time = max_vel_delta / acceleration if acceleration > 0 else 0
-            ramp_steps = int(ramp_time * self._control_freq)
-
-            if duration is not None:
-                hold_time = max(0, duration - 2 * ramp_time)
-            else:
-                hold_time = 1.0
-            hold_steps = int(hold_time * self._control_freq)
+            target_vel = self._safety.clamp_velocity(
+                list(velocities), positions=list(self._state.joints))
+            start_vel = self._safety.clamp_velocity(list(self._state.velocities))
+            target_vel, ramp_up_steps, ramp_down_steps, hold_steps, _ = (
+                self._fit_velocity_profile(
+                    target_vel, start_vel, acceleration, duration, dt, "speedj")
+            )
 
             self._state = self._executor.run(
-                velocity_joint_frames(target_vel, ramp_steps, hold_steps, dt)
+                velocity_joint_frames(
+                    target_vel, ramp_up_steps, hold_steps, dt,
+                    start_vel=start_vel, ramp_down_steps=ramp_down_steps)
             )
 
             # Gradual transition to position hold (ramp kp over ~50ms to avoid torque jump)
@@ -1235,6 +1242,9 @@ class Arm(ArmTransformsMixin):
                 self._clock.tick(dt)
             self._safety.reconcile_position(list(self._state.joints))
             return self._state
+        except BaseException:
+            self._best_effort_velocity_hold()
+            raise
         finally:
             self._end_motion()
 
@@ -1268,6 +1278,9 @@ class Arm(ArmTransformsMixin):
             if twist.shape != (6,):
                 raise OneroConfigError(
                     f"speedl: expected 6-element twist [vx,vy,vz,wx,wy,wz], got shape {twist.shape}")
+            if not np.all(np.isfinite(twist)):
+                raise OneroConfigError("speedl: velocities must contain only finite values")
+            self._validate_velocity_timing(acceleration, duration, "speedl")
 
             resolved_frame = self._resolve_frame(frame)
             is_dynamic_frame = (resolved_frame == "tool")
@@ -1283,26 +1296,36 @@ class Arm(ArmTransformsMixin):
             n = self.num_joints
             dt = 1.0 / self._control_freq
 
-            # Compute initial joint velocity for ramp timing
-            joint_vel_target = dynamics.jacobian_solve(self._state.joints, twist_base)
-            max_vel_delta = float(np.max(np.abs(joint_vel_target)))
-            ramp_time = max_vel_delta / acceleration if acceleration > 0 else 0
-            ramp_steps = int(ramp_time * self._control_freq)
-
-            if duration is not None:
-                hold_time = max(0, duration - 2 * ramp_time)
-            else:
-                hold_time = 1.0
-            hold_steps = int(hold_time * self._control_freq)
+            # Compute an acceleration-feasible initial ramp. The frame
+            # generator continues enforcing the limit as the Jacobian changes.
+            start_vel = self._safety.clamp_velocity(list(self._state.velocities))
+            joint_vel_target = self._safety.clamp_velocity(
+                dynamics.jacobian_solve(self._state.joints, twist_base).tolist(),
+                positions=list(self._state.joints),
+            )
+            (joint_vel_target, ramp_up_steps, ramp_down_steps,
+             hold_steps, twist_scale) = self._fit_velocity_profile(
+                joint_vel_target, start_vel, acceleration, duration, dt, "speedl")
+            twist_base = twist_base * twist_scale
+            if twist_fn is not None:
+                raw_twist_fn = twist_fn
+                twist_fn = lambda: raw_twist_fn() * twist_scale
 
             def _get_joints():
                 return self._state.joints
 
             self._state = self._executor.run(
-                velocity_cartesian_frames(twist_base, ramp_steps, hold_steps, dt,
-                                          _get_joints, dynamics.jacobian_solve,
-                                          twist_fn=twist_fn,
-                                          singularity_policy=self._singularity_policy)
+                velocity_cartesian_frames(
+                    twist_base, ramp_up_steps, hold_steps, dt,
+                    _get_joints, dynamics.jacobian_solve,
+                    twist_fn=twist_fn,
+                    singularity_policy=self._singularity_policy,
+                    start_velocity=start_vel,
+                    max_acceleration=acceleration,
+                    velocity_limit_fn=lambda q, dq: self._safety.clamp_velocity(
+                        dq.tolist(), positions=list(q)),
+                    ramp_down_steps=ramp_down_steps,
+                )
             )
 
             # Gradual transition to position hold
@@ -1322,6 +1345,9 @@ class Arm(ArmTransformsMixin):
                 self._clock.tick(dt)
             self._safety.reconcile_position(list(self._state.joints))
             return self._state
+        except BaseException:
+            self._best_effort_velocity_hold()
+            raise
         finally:
             self._end_motion()
 
@@ -1341,6 +1367,7 @@ class Arm(ArmTransformsMixin):
         """
         self._check_enabled()
         self._check_no_freedrive()
+        self._validate_velocity_timing(deceleration, None, "stop")
 
         # If another motion holds the lock, signal it to stop
         if not self._motion_lock.acquire(blocking=False):
@@ -1856,7 +1883,7 @@ class Arm(ArmTransformsMixin):
             base_position: [0, -0.15, 0]
             with_gripper: true
             safety:
-              max_velocity: 5.0
+              max_velocity: 6.0
               timeout_frames: 10
         """
         try:
@@ -1877,7 +1904,7 @@ class Arm(ArmTransformsMixin):
 
         safety_raw = raw.get("safety", {})
         safety = SafetyConfig(
-            max_velocity=safety_raw.get("max_velocity", 5.0),
+            max_velocity=safety_raw.get("max_velocity", 6.0),
             max_delta_per_step=safety_raw.get("max_delta_per_step", 0.03),
             timeout_frames=safety_raw.get("timeout_frames", 10),
             enabled=safety_raw.get("enabled", True),
@@ -2444,7 +2471,90 @@ class Arm(ArmTransformsMixin):
             raise OneroConfigError(
                 f"'{param_name}' must have {self.num_joints} elements "
                 f"(one per joint), got {len(result)}")
+        if not all(math.isfinite(v) for v in result):
+            raise OneroConfigError(f"'{param_name}' must contain only finite values")
         return result
+
+    @staticmethod
+    def _validate_velocity_timing(acceleration: float,
+                                  duration: Optional[float],
+                                  command: str) -> None:
+        if not isinstance(acceleration, (int, float)) or not math.isfinite(acceleration):
+            raise OneroConfigError(f"{command}: acceleration must be finite")
+        if acceleration <= 0:
+            raise OneroConfigError(f"{command}: acceleration must be greater than zero")
+        if duration is not None:
+            if not isinstance(duration, (int, float)) or not math.isfinite(duration):
+                raise OneroConfigError(f"{command}: duration must be finite")
+            if duration <= 0:
+                raise OneroConfigError(f"{command}: duration must be greater than zero")
+
+    def _fit_velocity_profile(self, target_velocity: list[float],
+                              start_velocity: list[float],
+                              acceleration: float,
+                              duration: Optional[float],
+                              dt: float,
+                              command: str):
+        """Fit an acceleration-bounded trapezoid/triangle into duration."""
+        target = np.asarray(target_velocity, dtype=float)
+        start = np.asarray(start_velocity, dtype=float)
+
+        def steps_for(scale: float) -> tuple[int, int]:
+            scaled = target * scale
+            up_delta = float(np.max(np.abs(scaled - start))) if target.size else 0.0
+            down_delta = float(np.max(np.abs(scaled))) if target.size else 0.0
+            up = math.ceil(max(0.0, up_delta / acceleration / dt - 1e-12))
+            down = math.ceil(max(0.0, down_delta / acceleration / dt - 1e-12))
+            return up, down
+
+        if duration is None:
+            up, down = steps_for(1.0)
+            return target.tolist(), up, down, round(1.0 / dt), 1.0
+
+        total_steps = max(1, round(duration / dt))
+        stop_steps, _ = steps_for(0.0)
+        if stop_steps > total_steps:
+            raise OneroConfigError(
+                f"{command}: duration {duration:.4f}s is too short to stop "
+                f"the measured starting velocity at acceleration={acceleration}")
+
+        scale = 1.0
+        up, down = steps_for(scale)
+        if up + down > total_steps:
+            low, high = 0.0, 1.0
+            for _ in range(50):
+                mid = (low + high) / 2.0
+                mid_up, mid_down = steps_for(mid)
+                if mid_up + mid_down <= total_steps:
+                    low = mid
+                else:
+                    high = mid
+            scale = low
+            up, down = steps_for(scale)
+
+        hold = max(0, total_steps - up - down)
+        return (target * scale).tolist(), up, down, hold, scale
+
+    def _best_effort_velocity_hold(self) -> None:
+        """Try to replace a stale velocity command after an aborted speed move."""
+        try:
+            with self._lock:
+                joints = list(self._state.joints)
+            n = self.num_joints
+            self._state = self._safe_backend.command(
+                positions=joints,
+                velocities=[0.0] * n,
+                kps=[self._default_kp] * n,
+                kds=[self._default_kd] * n,
+                torques=self._gravity_torques(joints),
+                hold=True,
+            )
+            self._safety.reconcile_position(list(self._state.joints))
+        except BaseException as hold_error:
+            logger.critical(
+                "Could not establish position hold after velocity-motion failure: %s",
+                hold_error,
+            )
 
     def _step_dt(self, dt: float) -> None:
         """Deadline-based sleep: accounts for time spent in command processing."""
