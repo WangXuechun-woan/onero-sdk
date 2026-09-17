@@ -272,11 +272,23 @@ class ArmAdapter:
             "A1":  "a1_r",  # legacy
         }
         urdf_file = _urdf_map.get(model_name, model_name.lower())
+        pose_frame = getattr(arm, "default_frame", "base")
+        rotation = np.asarray(
+            getattr(arm, "R_world_base", np.eye(3)), dtype=float)
+        base_position = np.asarray(
+            getattr(arm, "base_position_in_world", np.zeros(3)), dtype=float)
         return {
             "side": self.side,
             "model": arm.model.name,
             "urdf_file": urdf_file,
             "num_joints": arm.num_joints,
+            # Cartesian pose/command frame and the physical base placement.
+            # The browser must consume these values instead of maintaining a
+            # second set of mounting constants; otherwise world-frame DualArm
+            # poses are transformed twice and Drag Ball targets are displaced.
+            "pose_frame": pose_frame,
+            "R_world_base": rotation.tolist(),
+            "base_position": base_position.tolist(),
             "enabled": arm.enabled,
             "moving": arm.is_moving,
             "freedrive": arm.is_freedrive,

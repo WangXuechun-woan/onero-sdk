@@ -147,7 +147,7 @@ start_lab(arm, port=8090, block=True)
 笛卡尔直线运动，对应 `arm.movel(position, speed=…)`。
 
 - 可直接输入目标 X/Y/Z，或点击 **Current** 填入当前末端位置
-- **Drag Ball**：显示世界坐标三轴操纵器；红/绿/蓝箭头分别对应 world X/Y/Z，并与场景原点三轴保持一致；平面手柄控制 XY/XZ/YZ；拖动只预览，松手后发送一次 MoveL
+- **Drag Ball**：显示世界坐标三轴操纵器；红/绿/蓝箭头分别对应 world X/Y/Z，并与场景原点三轴保持一致；平面手柄控制 XY/XZ/YZ；拖动只预览，松手后发送一次 MoveL。球和 URDF 模型的位置使用服务端返回的 `pose_frame`、`R_world_base`、`base_position`，不会在 world-frame 双臂模式中重复应用安装变换
 - **Apply**：提交一次完整直线运动，不会在拖动期间反复取消和重启轨迹
 - **Stop**：停止当前运动并隐藏控制球
 - 目标位置可任意拖动或输入；可达性由 IK 和 URDF 关节限位判断
@@ -218,6 +218,9 @@ Debug UI 暴露了完整的 REST API，可从其他工具调用：
   "side": "right",
   "model": "A1R",
   "num_joints": 7,
+  "pose_frame": "world",
+  "R_world_base": [[0,1,0],[0,0,1],[1,0,0]],
+  "base_position": [0.0, 0.18, 0.0],
   "enabled": true,
   "moving": false,
   "freedrive": false,

@@ -26,30 +26,25 @@ const SIDES = ['left', 'right'];
 
 // These defaults are overwritten once /api/state is fetched
 const CFG = {
-  left:  { api: '/left/api',  model: 'a1_l', shoulderY: +0.18, panel: 'leftPanel',  label: '左臂' },
-  right: { api: '/right/api', model: 'a1_r', shoulderY: -0.18, panel: 'rightPanel', label: '右臂' },
+  left:  { api: '/left/api',  model: 'a1_l', panel: 'leftPanel',  label: '左臂',
+           poseFrame: 'base', worldFromBase: new THREE.Matrix4(),
+           baseFromWorld: new THREE.Matrix4(), basePosition: new THREE.Vector3() },
+  right: { api: '/right/api', model: 'a1_r', panel: 'rightPanel', label: '右臂',
+           poseFrame: 'base', worldFromBase: new THREE.Matrix4(),
+           baseFromWorld: new THREE.Matrix4(), basePosition: new THREE.Vector3() },
 };
 
-// Humanoid shoulder mounting, base vectors → scene/world vectors.
-// Both arms: base +X points up. Base +Z points outward (+Y left, -Y right).
-const SCENE_R_BASE = {
-  left: new THREE.Matrix4().set(
-    0,  1,  0, 0,
-    0,  0,  1, 0,
-    1,  0,  0, 0,
-    0,  0,  0, 1,
-  ),
-  right: new THREE.Matrix4().set(
-    0, -1,  0, 0,
-    0,  0, -1, 0,
-    1,  0,  0, 0,
-    0,  0,  0, 1,
-  ),
-};
-const BASE_R_SCENE = {
-  left: SCENE_R_BASE.left.clone().transpose(),
-  right: SCENE_R_BASE.right.clone().transpose(),
-};
+function matrix4FromRotation(rows) {
+  if (!Array.isArray(rows) || rows.length !== 3 || rows.some(r => !Array.isArray(r) || r.length !== 3)) {
+    return new THREE.Matrix4();
+  }
+  return new THREE.Matrix4().set(
+    rows[0][0], rows[0][1], rows[0][2], 0,
+    rows[1][0], rows[1][1], rows[1][2], 0,
+    rows[2][0], rows[2][1], rows[2][2], 0,
+    0, 0, 0, 1,
+  );
+}
 
 // Whether the server runs in single-arm mode (served at /api instead of /left|right/api)
 let singleArmSide = null;   // 'left' | 'right' | null (dual)
@@ -136,13 +131,15 @@ torso.rotation.x = Math.PI / 2;
 torso.position.set(0, 0, -0.16);
 scene.add(torso);
 
+const shoulderMarkers = {};
 for (const s of SIDES) {
   const sh = new THREE.Mesh(
     new THREE.SphereGeometry(0.025, 16, 16),
     new THREE.MeshPhongMaterial({ color: 0xfbbf24 }),
   );
-  sh.position.set(0, CFG[s].shoulderY, 0);
+  sh.position.copy(CFG[s].basePosition);
   scene.add(sh);
+  shoulderMarkers[s] = sh;
 }
 
 function resize() {
@@ -160,6 +157,7 @@ resize();
 // ─────────────────────────────────────────────────────────────
 
 const robots     = { left: null, right: null };
+const robotGroups = { left: null, right: null };
 const ghostGroup = { left: null, right: null };
 const ghostAxes  = { left: [], right: [] };
 const showGhost  = { left: true, right: true };
@@ -199,19 +197,44 @@ function buildGhostAxes(side, robot) {
   updateGhost(side);
 }
 
+function updateMountDisplay(side) {
+  const c = CFG[side];
+  const group = robotGroups[side];
+  if (group) {
+    group.position.copy(c.basePosition);
+    group.setRotationFromMatrix(c.worldFromBase);
+  }
+  const gg = ghostGroup[side];
+  if (gg) {
+    gg.position.copy(c.basePosition);
+    gg.setRotationFromMatrix(c.worldFromBase);
+  }
+  if (shoulderMarkers[side]) shoulderMarkers[side].position.copy(c.basePosition);
+}
+
+function applyFrameConfig(side, data) {
+  const c = CFG[side];
+  c.poseFrame = data.pose_frame === 'world' ? 'world' : 'base';
+  c.worldFromBase = matrix4FromRotation(data.R_world_base);
+  c.baseFromWorld = c.worldFromBase.clone().invert();
+  const bp = data.base_position;
+  c.basePosition = Array.isArray(bp) && bp.length >= 3
+    ? new THREE.Vector3(Number(bp[0]), Number(bp[1]), Number(bp[2]))
+    : new THREE.Vector3();
+  updateMountDisplay(side);
+}
+
 function loadRobot(side) {
   const c = CFG[side];
   const group = new THREE.Group();
-  group.position.set(0, c.shoulderY, 0);
-  group.setRotationFromMatrix(SCENE_R_BASE[side]);
+  robotGroups[side] = group;
   scene.add(group);
 
   const gg = new THREE.Group();
-  gg.position.copy(group.position);
-  gg.quaternion.copy(group.quaternion);
+  ghostGroup[side] = gg;
+  updateMountDisplay(side);
   gg.visible = showGhost[side];
   scene.add(gg);
-  ghostGroup[side] = gg;
 
   const loader = new URDFLoader();
   // urdf-loader prepends workingPath to every filename;
@@ -292,18 +315,19 @@ function setGhostVisible(side, v) {
 // 4.  MoveL / MoveP target gizmo
 // ─────────────────────────────────────────────────────────────
 
-/** Convert between arm-base coordinates and the displayed humanoid world. */
+/** Convert between the server's Cartesian API frame and displayed world. */
 function eeToScene(pos, side) {
   if (!pos || pos.length < 3) return null;
-  return new THREE.Vector3(...pos)
-    .applyMatrix4(SCENE_R_BASE[side])
-    .add(new THREE.Vector3(0, CFG[side].shoulderY, 0));
+  const c = CFG[side];
+  const point = new THREE.Vector3(...pos);
+  if (c.poseFrame === 'world') return point;
+  return point.applyMatrix4(c.worldFromBase).add(c.basePosition);
 }
 
 function sceneToEe(pos, side) {
-  const base = pos.clone()
-    .sub(new THREE.Vector3(0, CFG[side].shoulderY, 0))
-    .applyMatrix4(BASE_R_SCENE[side]);
+  const c = CFG[side];
+  if (c.poseFrame === 'world') return [pos.x, pos.y, pos.z];
+  const base = pos.clone().sub(c.basePosition).applyMatrix4(c.baseFromWorld);
   return [base.x, base.y, base.z];
 }
 
@@ -322,10 +346,8 @@ for (const s of SIDES) {
   );
   ball.userData.side = s;
   ball.visible = false;
-  // The ball shares the arm mounting for display, while TransformControls is
-  // kept in world space so its red/green/blue handles always match the global
-  // X/Y/Z arrows and the motion visible on screen.
-  ball.setRotationFromMatrix(SCENE_R_BASE[s]);
+  // TransformControls stays in world space so red/green/blue handles always
+  // match the global X/Y/Z arrows. Position conversion uses server metadata.
   scene.add(ball);
   ballMeshes[s] = ball;
 
@@ -785,6 +807,7 @@ function applyState(side, data) {
   if (data.joints && data.joints.length > 0) {
     const nextErrorSeq = Number(data.error_seq || 0);
     const hasNewError = nextErrorSeq > s.error_seq;
+    applyFrameConfig(side, data);
     s.joints        = data.joints;
     s.limits        = data.limits || s.limits;
     s.enabled       = data.enabled;
@@ -794,6 +817,7 @@ function applyState(side, data) {
     s.command_active = Boolean(data.command_active);
     s.end_effector  = data.pose || null;
     s.model         = data.model || s.model;
+    s.urdf_file     = data.urdf_file || s.urdf_file;
     s.num_joints    = data.num_joints || s.num_joints;
     s.error_seq     = nextErrorSeq;
 

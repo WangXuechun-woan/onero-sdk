@@ -20,6 +20,13 @@ class RecordingArm:
     is_freedrive = False
     is_moving = False
     model = SimpleNamespace(name="A1L")
+    default_frame = "world"
+    R_world_base = np.array([
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0],
+    ])
+    base_position_in_world = np.array([0.1, 0.2, 0.3])
 
     def __init__(self):
         self.calls = []
@@ -65,6 +72,18 @@ class RecordingArm:
 
     def freedrive_disable(self):
         self.is_freedrive = False
+
+
+def test_state_exposes_cartesian_frame_metadata():
+    arm = RecordingArm()
+    adapter = ArmAdapter(arm, side="left")
+    try:
+        state = adapter.get_state_dict()
+        assert state["pose_frame"] == "world"
+        assert state["R_world_base"] == arm.R_world_base.tolist()
+        assert state["base_position"] == [0.1, 0.2, 0.3]
+    finally:
+        adapter.close()
 
 
 def test_movep_is_available_and_preserves_current_orientation():
@@ -134,6 +153,10 @@ def test_web_ui_exposes_drag_ball_for_movep():
 
         assert "TransformControls" in script
         assert "control.setSpace('world')" in script
+        assert "pose_frame" in script
+        assert "R_world_base" in script
+        assert "base_position" in script
+        assert "SCENE_R_BASE" not in script
         assert "ROOT_ROT" not in script
         assert "CARTESIAN_MAX_STEP" not in script
         assert "hasNewError" in script
