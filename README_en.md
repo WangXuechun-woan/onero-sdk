@@ -50,10 +50,14 @@ python -m onero_sdk.debugui --arm right --channel can0
 
 # Canonical vertical left shoulder with gripper gravity compensation
 python -m onero_sdk.debugui --arm left --channel can0 \
-  --mount humanoid_left --gripper-compensation on
+  --mount humanoid_left --gripper-model omnipicker \
+  --gripper-protocol omnipicker --gripper-compensation on
 
 # Dual hardware arms; interface numbers never infer arm side
-python -m onero_sdk.debugui --arm both --left-channel can1 --right-channel can0
+python -m onero_sdk.debugui --arm both --left-channel can1 --right-channel can0 \
+  --gripper-model omnipicker --gripper-protocol omnipicker \
+  --gripper-compensation on
+# To show Woan Picker instead: --gripper-model woan_picker
 
 # Dual-arm simulation
 python -m onero_sdk.debugui --arm both --sim
@@ -853,46 +857,28 @@ world origin (centered between arms)
 
 ### End Effector (Gripper / Dexterous Hand)
 
-**What it does**: The SDK provides abstract interfaces (`Gripper`, `DexterousHand`) that bind end-effector lifecycle to the arm. Implement the communication protocol for your hardware and get automatic enable/disable management with a unified API.
+**What it does**: The SDK includes `OmniPickerGripper` (legacy byte protocol) and `OneroGripper` (self-developed MIT protocol). The user must select the protocol explicitly; there is no automatic detection or fallback. The gripper shares the Arm-owned CAN transport and I/O lock, so SocketCAN and direct Python SLCAN do not open a device twice or race feedback frames.
 
-**When to use**: When a gripper or dexterous hand is mounted. The SDK is hardware-agnostic — adapt any protocol (CAN, RS485, EtherCAT, etc.) by subclassing the abstract base class.
+**When to use**: When a physical gripper shares the A1 CAN channel. Visual model, hardware protocol, TCP, payload, and gravity compensation remain independent.
 
 ```python
-from onero_sdk import Arm, Gripper
-from onero_sdk.can_bus import CanBus
+from onero_sdk import Arm, OmniPickerGripper
 
-class MyGripper(Gripper):
-    def __init__(self, bus, can_id=0x08):
-        self._bus = bus
-        self._can_id = can_id
-        self._pos = 0xFF
+# Explicitly select OmniPicker; use OneroGripper() for MIT hardware.
+# Legacy force defaults to a conservative 0x20/255 rather than maximum force.
+gripper = OmniPickerGripper(can_id=0x08, force=0x20, velocity=0xFF)
 
-    def enable(self):    self.open()
-    def disable(self):   self.open()   # release on disable
-    def shutdown(self):  return None   # CAN bus owned by caller
-    def open(self):      self._send(0xFF)
-    def grasp(self):     self._send(0x00)
-    def set_position(self, position: float):
-        self._send(int(position * 0xFF))
-    def get_position(self) -> float:
-        return self._pos / 0xFF
-    def _send(self, pos):
-        data = bytes([0x00, pos, 0xFF, 0x80, 0xFF, 0xFF, 0x00, 0x00])
-        self._bus.send(self._can_id, data)
-        self._pos = pos
-
-# Attach to arm — enable/disable managed automatically
-bus = CanBus("can0")
-gripper = MyGripper(bus, can_id=0x08)
-
-with Arm("A1R", channel="can0", end_effector=gripper) as arm:
-    arm.movej([0.0, 0.8, 0.0, -1.0, 0.0, 0.5, 0.0], duration=2.0)
-    arm.gripper.open()
-    arm.movej([0.0, 1.0, 0.0, -1.2, 0.0, 0.5, 0.0], duration=1.5)
-    arm.gripper.grasp()
+with Arm("A1R", channel="can0", end_effector=gripper,
+         with_gripper=True) as arm:
+    arm.gripper.open()          # 1.0 = fully open
+    arm.gripper.set_position(0.5)
+    arm.gripper.grasp()         # 0.0 = fully closed
+    print(arm.gripper.state)    # position/velocity/force/status feedback
 ```
 
-See `examples/gripper_pick_place.py` for a full pick-and-place workflow.
+`close()` and context exit do not send an additional gripper-disable frame; only explicit `arm.disable()` runs the defined disable lifecycle.
+
+See [docs/guide_grippers.md](docs/guide_grippers.md) for protocol selection, side-specific Onero endpoint calibration, lifecycle, and safety details. See `examples/gripper_pick_place.py` for a full pick-and-place workflow.
 
 ## Hardware Setup
 

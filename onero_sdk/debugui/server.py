@@ -35,6 +35,9 @@ LabServer
       POST /[<side>/]api/servo/stop
       POST /[<side>/]api/freedrive/start  {"damping":0.5}
       POST /[<side>/]api/freedrive/stop
+      POST /[<side>/]api/gripper/enable
+      POST /[<side>/]api/gripper/disable
+      POST /[<side>/]api/gripper/position {"position":0.0..1.0}
 
 Single-arm mode uses prefix ``/api/``; dual-arm uses ``/left/api/`` and
 ``/right/api/``.  The SSE stream at ``/api/stream`` always sends both sides
@@ -64,6 +67,7 @@ logger = logging.getLogger(__name__)
 _PKG_DIR = pathlib.Path(__file__).parent.parent   # onero_sdk/
 _STATIC_DIR = pathlib.Path(__file__).parent / "static"
 _URDF_DIR = _PKG_DIR / "urdf" / "A1"
+_TOOL_DIR = _PKG_DIR / "tools"
 _MESH_DIR = _PKG_DIR / "meshes"
 
 
@@ -111,9 +115,13 @@ class ArmAdapter:
     running motion via ``arm.stop()``.
     """
 
-    def __init__(self, arm, side: str = "right") -> None:
+    def __init__(self, arm, side: str = "right",
+                 tool_model: str | None = None) -> None:
+        from ..tool_models import get_tool_model
+
         self._arm = arm
         self.side = side
+        self._tool_model = get_tool_model(tool_model, side=side)
         self._lock = threading.Lock()
 
         # Worker thread for blocking motions
@@ -261,6 +269,13 @@ class ArmAdapter:
             self._last_quat = _rot_to_quat(rot)
         except Exception:
             pass
+        gripper = getattr(self._arm, "gripper", None)
+        refresh = getattr(gripper, "refresh", None)
+        if refresh is not None:
+            try:
+                refresh()
+            except Exception:
+                pass
 
     def get_state_dict(self) -> dict:
         arm = self._arm
@@ -289,6 +304,8 @@ class ArmAdapter:
             "pose_frame": pose_frame,
             "R_world_base": rotation.tolist(),
             "base_position": base_position.tolist(),
+            "tool_model": self._tool_model,
+            "gripper": self._gripper_state_dict(),
             "enabled": arm.enabled,
             "moving": arm.is_moving,
             "freedrive": arm.is_freedrive,
@@ -304,6 +321,28 @@ class ArmAdapter:
             "msg": self._last_msg,
             "fault": self._last_fault,
             "error_seq": self._error_seq,
+        }
+
+    def _gripper_state_dict(self) -> Optional[dict]:
+        gripper = getattr(self._arm, "gripper", None)
+        if gripper is None:
+            return None
+        protocol = getattr(gripper, "detected_protocol", None)
+        protocol = protocol or getattr(gripper, "protocol_name", type(gripper).__name__)
+        state = getattr(gripper, "state", None)
+        try:
+            position = float(gripper.get_position())
+        except Exception:
+            position = None
+        return {
+            "hardware_control": callable(getattr(gripper, "set_position", None)),
+            "protocol": protocol,
+            "enabled": bool(getattr(gripper, "enabled", False)),
+            "position": position,
+            "velocity": None if state is None else float(state.velocity),
+            "force": None if state is None else float(state.force),
+            "fault_code": None if state is None else int(state.fault_code),
+            "motion_state": None if state is None else int(state.motion_state),
         }
 
     # ------------------------------------------------------------------
@@ -345,6 +384,47 @@ class ArmAdapter:
         if not self._dispatch({"name": "home"}):
             return {"ok": False, "msg": "motion already in progress"}
         return {"ok": True, "msg": "homing queued"}
+
+    def enable_gripper(self) -> dict:
+        gripper = getattr(self._arm, "gripper", None)
+        if gripper is None:
+            return {"ok": False, "msg": "no hardware gripper configured"}
+        try:
+            gripper.enable()
+            self._last_msg = "gripper enabled"
+            self._last_fault = ""
+            return {"ok": True, "msg": self._last_msg}
+        except Exception as exc:
+            self._last_fault = str(exc)
+            return {"ok": False, "msg": str(exc)}
+
+    def disable_gripper(self) -> dict:
+        gripper = getattr(self._arm, "gripper", None)
+        if gripper is None:
+            return {"ok": False, "msg": "no hardware gripper configured"}
+        try:
+            gripper.disable()
+            self._last_msg = "gripper disabled"
+            return {"ok": True, "msg": self._last_msg}
+        except Exception as exc:
+            self._last_fault = str(exc)
+            return {"ok": False, "msg": str(exc)}
+
+    def set_gripper_position(self, position: float) -> dict:
+        gripper = getattr(self._arm, "gripper", None)
+        if gripper is None or not callable(getattr(gripper, "set_position", None)):
+            return {"ok": False, "msg": "no hardware gripper configured"}
+        try:
+            position = float(position)
+            if not np.isfinite(position) or not 0.0 <= position <= 1.0:
+                return {"ok": False, "msg": "position must be in [0.0, 1.0]"}
+            gripper.set_position(position)
+            self._last_msg = f"gripper position={position:.0%}"
+            self._last_fault = ""
+            return {"ok": True, "msg": self._last_msg}
+        except Exception as exc:
+            self._last_fault = str(exc)
+            return {"ok": False, "msg": str(exc)}
 
     def set_stiffness(self, stiffness: str) -> dict:
         valid = ("stiff", "medium", "soft")
@@ -596,14 +676,12 @@ class _LabHandler(BaseHTTPRequestHandler):
         ctype = mimetypes.guess_type(str(safe))[0] or "application/octet-stream"
         self._send(200, ctype, safe.read_bytes())
 
-    def _serve_urdf(self, rel: str) -> None:
-        """Serve URDF from onero_sdk/urdf/A1/ and rewrite mesh paths to /assets/meshes/."""
-        safe = (_URDF_DIR / rel).resolve()
-        if not str(safe).startswith(str(_URDF_DIR.resolve())) or not safe.is_file():
+    def _serve_urdf_from(self, root: pathlib.Path, rel: str) -> None:
+        """Serve a confined URDF and rewrite meshes to /assets/meshes/."""
+        safe = (root / rel).resolve()
+        if not str(safe).startswith(str(root.resolve())) or not safe.is_file():
             self._send(404, "text/plain", b"urdf not found")
             return
-        # Patch mesh filename paths so Three.js urdf-loader can fetch them
-        # from /assets/meshes/...
         text = safe.read_text(encoding="utf-8")
         # Replace relative STL references with absolute /assets/meshes/ URLs
         # Pattern: filename="<anything>.STL" (case-insensitive)
@@ -623,6 +701,12 @@ class _LabHandler(BaseHTTPRequestHandler):
             return f'filename="/assets/meshes/{clean.lstrip("/")}"'
         text = re.sub(r'filename="([^"]+\.(?:STL|stl|dae|DAE))"', _rewrite, text)
         self._send(200, "application/xml", text.encode("utf-8"))
+
+    def _serve_urdf(self, rel: str) -> None:
+        self._serve_urdf_from(_URDF_DIR, rel)
+
+    def _serve_tool_urdf(self, rel: str) -> None:
+        self._serve_urdf_from(_TOOL_DIR, rel)
 
     def _serve_mesh(self, rel: str) -> None:
         safe = (_MESH_DIR / rel).resolve()
@@ -678,6 +762,10 @@ class _LabHandler(BaseHTTPRequestHandler):
 
         if path.startswith("/assets/urdf/"):
             self._serve_urdf(path[len("/assets/urdf/"):])
+            return
+
+        if path.startswith("/assets/tools/"):
+            self._serve_tool_urdf(path[len("/assets/tools/"):])
             return
 
         if path.startswith("/assets/meshes/"):
@@ -751,6 +839,10 @@ class _LabHandler(BaseHTTPRequestHandler):
             "/api/freedrive/start":  lambda: adapter.freedrive_start(
                                          damping=float(body.get("damping", 0.5))),
             "/api/freedrive/stop":   lambda: adapter.freedrive_stop(),
+            "/api/gripper/enable":   lambda: adapter.enable_gripper(),
+            "/api/gripper/disable":  lambda: adapter.disable_gripper(),
+            "/api/gripper/position": lambda: adapter.set_gripper_position(
+                                         body.get("position")),
         }
 
         handler = routes.get(rest)
@@ -806,7 +898,8 @@ class LabServer(ThreadingHTTPServer):
 
 def start_lab(arm, side: str = "right",
               host: str = "0.0.0.0", port: int = 8090,
-              block: bool = True) -> Optional[LabServer]:
+              block: bool = True,
+              tool_model: str | None = None) -> Optional[LabServer]:
     """
     Start the debug UI for a single ``Arm`` instance.
 
@@ -821,7 +914,7 @@ def start_lab(arm, side: str = "right",
     Returns:
         ``LabServer`` when ``block=False``, else ``None``.
     """
-    adapter = ArmAdapter(arm, side=side)
+    adapter = ArmAdapter(arm, side=side, tool_model=tool_model)
     server = LabServer(adapters={side: adapter}, dual_mode=False,
                        host=host, port=port)
     url = f"http://{'localhost' if host == '0.0.0.0' else host}:{port}"
@@ -842,7 +935,9 @@ def start_lab(arm, side: str = "right",
 
 
 def start_lab_dual(dual, host: str = "0.0.0.0", port: int = 8090,
-                   block: bool = True) -> Optional[LabServer]:
+                   block: bool = True,
+                   left_tool_model: str | None = None,
+                   right_tool_model: str | None = None) -> Optional[LabServer]:
     """
     Start the debug UI for a ``DualArm`` instance.
 
@@ -856,8 +951,10 @@ def start_lab_dual(dual, host: str = "0.0.0.0", port: int = 8090,
         ``LabServer`` when ``block=False``, else ``None``.
     """
     adapters = {
-        "left":  ArmAdapter(dual.left,  side="left"),
-        "right": ArmAdapter(dual.right, side="right"),
+        "left": ArmAdapter(
+            dual.left, side="left", tool_model=left_tool_model),
+        "right": ArmAdapter(
+            dual.right, side="right", tool_model=right_tool_model),
     }
     server = LabServer(adapters=adapters, dual_mode=True, host=host, port=port)
     url = f"http://{'localhost' if host == '0.0.0.0' else host}:{port}"

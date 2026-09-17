@@ -136,6 +136,18 @@ class Arm(ArmTransformsMixin):
 
         self._channel = channel or getattr(can_bus, "channel", None)
 
+        # CAN end effectors share this Arm's single transport and I/O lock.
+        # This is required for direct SLCAN (the serial device cannot be opened
+        # twice) and prevents arm feedback collection racing gripper replies.
+        if end_effector is not None and hasattr(end_effector, "bind_transport"):
+            configure_model = getattr(end_effector, "configure_for_model", None)
+            if configure_model is not None:
+                configure_model(self._model_info.name)
+            if not isinstance(raw_backend, CanBackend):
+                raise OneroConfigError(
+                    "A CAN end effector requires a real CAN backend")
+            raw_backend.bind_can_device(end_effector)
+
         # Zero-offset layer: translates between user coordinates (URDF zero)
         # and raw motor coordinates. Loaded from disk once at __init__; can be
         # updated at runtime via set_current_position_as_zero() / clear_zero_offset().
@@ -977,8 +989,19 @@ class Arm(ArmTransformsMixin):
         with self._lock:
             current_joints = list(self._state.joints)
         ik.reset(np.array(current_joints))
-        q_target = ik.solve(target_pos, target_rot,
-                            dt=1.0 / self._control_freq, strict=True)
+        # MoveP solves one potentially distant endpoint, unlike MoveL's small
+        # warm-started path increments. Ten 5 ms QP steps and 0.1 mm tolerance
+        # were too strict for real hardware: valid targets with 0.12-0.30 mm
+        # residual were rejected. Keep strict failure semantics, but use a
+        # bounded endpoint solve and tolerances consistent with A1 accuracy.
+        q_target = ik.solve(
+            target_pos, target_rot,
+            dt=1.0 / self._control_freq,
+            max_iter=50,
+            pos_tol=1e-3,
+            rot_tol=2e-3,
+            strict=True,
+        )
         target_joints = q_target.tolist() if hasattr(q_target, 'tolist') else list(q_target)
 
         # Joint-space interpolation to that target

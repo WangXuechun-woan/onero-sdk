@@ -51,10 +51,14 @@ python -m onero_sdk.debugui --arm right --channel can0
 
 # 人形竖直安装、带夹爪补偿的真机单左臂
 python -m onero_sdk.debugui --arm left --channel can0 \
-  --mount humanoid_left --gripper-compensation on
+  --mount humanoid_left --gripper-model omnipicker \
+  --gripper-protocol omnipicker --gripper-compensation on
 
 # 双臂（接口编号仅是通信配置，不用于推断左右臂型号）
-python -m onero_sdk.debugui --arm both --left-channel can1 --right-channel can0
+python -m onero_sdk.debugui --arm both --left-channel can1 --right-channel can0 \
+  --gripper-model omnipicker --gripper-protocol omnipicker \
+  --gripper-compensation on
+# 外观替换为 Woan Picker：--gripper-model woan_picker
 
 # 纯仿真（无需硬件）
 python -m onero_sdk.debugui --arm both --sim
@@ -859,46 +863,28 @@ world 原点 (两臂中间)
 
 ### 末端执行器（夹爪 / 灵巧手）
 
-**特性说明**：SDK 提供抽象接口（`Gripper`、`DexterousHand`），将末端执行器的生命周期与机械臂绑定。只需实现通信协议，即可享受自动 enable/disable 管理和统一的 API 风格。
+**特性说明**：SDK 内置 `OmniPickerGripper`（旧款字节协议）和 `OneroGripper`（自研 MIT 协议）。型号必须由用户显式指定，不自动探测或回退。夹爪与机械臂共享同一个 Arm 所有的 CAN transport 和 I/O 锁，因此 SocketCAN 与直接 Python SLCAN 都不会重复打开设备或争抢反馈帧。
 
-**适用场景**：当末端安装了夹爪或灵巧手时使用。SDK 不限定具体硬件，通过继承抽象基类适配任意协议（CAN、RS485、EtherCAT 等）。
+**适用场景**：实体夹爪与 A1 共用 CAN 通道时使用。视觉模型、夹爪通信、TCP、payload 和重力补偿互相独立。
 
 ```python
-from onero_sdk import Arm, Gripper
-from onero_sdk.can_bus import CanBus
+from onero_sdk import Arm, OmniPickerGripper
 
-class MyGripper(Gripper):
-    def __init__(self, bus, can_id=0x08):
-        self._bus = bus
-        self._can_id = can_id
-        self._pos = 0xFF
+# 明确选择 OmniPicker 协议；自研 MIT 夹爪则使用 OneroGripper()。
+# Legacy 默认力矩为 0x20/255，避免默认最大夹持力。
+gripper = OmniPickerGripper(can_id=0x08, force=0x20, velocity=0xFF)
 
-    def enable(self):    self.open()
-    def disable(self):   self.open()   # 失能时释放夹爪
-    def shutdown(self):  return None   # CAN bus 由调用方持有
-    def open(self):      self._send(0xFF)
-    def grasp(self):     self._send(0x00)
-    def set_position(self, position: float):
-        self._send(int(position * 0xFF))
-    def get_position(self) -> float:
-        return self._pos / 0xFF
-    def _send(self, pos):
-        data = bytes([0x00, pos, 0xFF, 0x80, 0xFF, 0xFF, 0x00, 0x00])
-        self._bus.send(self._can_id, data)
-        self._pos = pos
-
-# 挂载到机械臂 — enable/disable 自动管理
-bus = CanBus("can0")
-gripper = MyGripper(bus, can_id=0x08)
-
-with Arm("A1R", channel="can0", end_effector=gripper) as arm:
-    arm.movej([0.0, 0.8, 0.0, -1.0, 0.0, 0.5, 0.0], duration=2.0)
-    arm.gripper.open()
-    arm.movej([0.0, 1.0, 0.0, -1.2, 0.0, 0.5, 0.0], duration=1.5)
-    arm.gripper.grasp()
+with Arm("A1R", channel="can0", end_effector=gripper,
+         with_gripper=True) as arm:
+    arm.gripper.open()          # 1.0 = 全开
+    arm.gripper.set_position(0.5)
+    arm.gripper.grasp()         # 0.0 = 全闭
+    print(arm.gripper.state)    # 位置/速度/力/状态反馈
 ```
 
-完整抓取工作流参见 `examples/gripper_pick_place.py`。
+`close()`/上下文退出不会额外发送夹爪失能帧；只有显式 `arm.disable()` 才执行已定义的失能流程。
+
+完整协议选择、Onero 左右端点校准、生命周期和安全说明参见 [docs/guide_grippers.md](docs/guide_grippers.md)；抓取工作流参见 `examples/gripper_pick_place.py`。
 
 ## 硬件配置
 

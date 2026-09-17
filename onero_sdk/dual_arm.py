@@ -59,6 +59,8 @@ class DualArm:
                right_mounting: str = "humanoid_right",
                left_with_gripper: bool = False,
                right_with_gripper: bool = False,
+               left_end_effector=None,
+               right_end_effector=None,
                base_position_left: Optional[list] = None,
                base_position_right: Optional[list] = None,
                arm_spacing: Optional[float] = None,
@@ -83,6 +85,8 @@ class DualArm:
                                for the left arm.
             right_with_gripper: Select the calibrated gripper gravity profile
                                 for the right arm.
+            left_end_effector: Optional physical end-effector driver for left arm.
+            right_end_effector: Optional physical end-effector driver for right arm.
             base_position_left: [x, y, z] left arm base in world frame (meters).
                                 Default: [0, +spacing/2, 0] if arm_spacing given.
             base_position_right: [x, y, z] right arm base in world frame (meters).
@@ -118,6 +122,7 @@ class DualArm:
             safety=copy.copy(safety) if safety else None,
             on_error=on_error,
             with_gripper=left_with_gripper,
+            end_effector=left_end_effector,
         )
         right = Arm(
             model=right_model,
@@ -129,6 +134,7 @@ class DualArm:
             safety=copy.copy(safety) if safety else None,
             on_error=on_error,
             with_gripper=right_with_gripper,
+            end_effector=right_end_effector,
         )
         return cls(left, right)
 

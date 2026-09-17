@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Kinematics extracted from the validated H1 v1.3 assembled model.
+     Mesh files are the byte-identical user-supplied Woan Picker assets. -->
+<robot name="woan_picker">
+  <link name="woan_picker_base_link">
+    <inertial>
+      <origin xyz="2.34428788456741E-05 0.013666827179515 -0.000395812429562818" rpy="0 0 0" />
+      <mass value="0.068722715375039" />
+      <inertia ixx="2.17808744042111E-05" ixy="5.06292640266843E-08" ixz="3.05414519598329E-10" iyy="3.41449323576419E-05" iyz="9.40934305671184E-08" izz="4.01954876075996E-05" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/grippers/woan_picker/base_link.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+  </link>
+  <link name="woan_picker_left_finger_link_1">
+    <inertial>
+      <origin xyz="0.0105413543783142 0.00240789757166834 0.000118506953156026" rpy="0 0 0" />
+      <mass value="0.0101341720021836" />
+      <inertia ixx="9.18855020056523E-07" ixy="-2.6078569581104E-07" ixz="8.67540111500176E-09" iyy="1.68305964764421E-06" iyz="7.28421489443297E-10" izz="1.53342820735411E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/grippers/woan_picker/Link_L1.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+  </link>
+  <link name="woan_picker_left_finger_link_2">
+    <inertial>
+      <origin xyz="0.00500117332948072 -0.0103393859707959 -1.07508552816292E-08" rpy="0 0 0" />
+      <mass value="0.0019611227105904" />
+      <inertia ixx="1.63743744832406E-07" ixy="5.7833147026385E-08" ixz="2.30465562822545E-14" iyy="7.21541206502207E-08" iyz="8.35469230107864E-15" izz="1.87824894114695E-07" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/grippers/woan_picker/Link_L2.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.266666666666667 0.329411764705882 0.776470588235294 1" />
+      </material>
+    </visual>
+  </link>
+  <link name="woan_picker_left_finger_link_3">
+    <inertial>
+      <origin xyz="-0.0132205099182183 -0.0273862945785209 -1.9042982921656E-07" rpy="0 0 0" />
+      <mass value="0.0152252830865295" />
+      <inertia ixx="2.83754866126961E-06" ixy="-5.68158212043048E-07" ixz="-1.66980788097567E-11" iyy="1.29306620584027E-06" iyz="-5.37686733214976E-11" izz="2.71087831523933E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/grippers/woan_picker/Link_L3.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+  </link>
+  <link name="woan_picker_left_finger_link_4">
+    <inertial>
+      <origin xyz="0.0220031538392694 -0.0051351359562508 -1.03925610994335E-07" rpy="0 0 0" />
+      <mass value="0.0117168072398927" />
+      <inertia ixx="3.58575050027226E-06" ixy="4.68036621689577E-07" ixz="1.83929103826127E-11" iyy="5.00935007334201E-06" iyz="-9.0373108202026E-12" izz="2.11087622902496E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/grippers/woan_picker/Link_L4.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.894117647058823 0.549019607843137 0.631372549019608 1" />
+      </material>
+    </visual>
+  </link>
+  <link name="woan_picker_right_finger_link_1">
+    <inertial>
+      <origin xyz="-0.0105426765730314 0.00240715552950935 -0.000118506959027069" rpy="0 0 0" />
+      <mass value="0.0101341723261253" />
+      <inertia ixx="9.18920630293418E-07" ixy="2.60777043399333E-07" ixz="8.69166854686057E-09" iyy="1.68299404356368E-06" iyz="-7.49308260032156E-10" izz="1.53342821220572E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/grippers/woan_picker/Link_R1.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+  </link>
+  <link name="woan_picker_right_finger_link_2">
+    <inertial>
+      <origin xyz="-0.00500135431913405 -0.010339298423989 1.07508261390808E-08" rpy="0 0 0" />
+      <mass value="0.00196112271059985" />
+      <inertia ixx="1.63741720071479E-07" ixy="-5.78347502626698E-08" ixz="2.3046285858993E-14" iyy="7.21561454112748E-08" iyz="-8.35495063022948E-15" izz="1.87824894114467E-07" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/grippers/woan_picker/Link_R2.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.266666666666667 0.329411764705882 0.776470588235294 1" />
+      </material>
+    </visual>
+  </link>
+  <link name="woan_picker_right_finger_link_3">
+    <inertial>
+      <origin xyz="0.0132208983022994 -0.0273875174898166 1.90429829213354E-07" rpy="0 0 0" />
+      <mass value="0.0152252830865295" />
+      <inertia ixx="2.8375486612696E-06" ixy="5.68158212043049E-07" ixz="-1.66980788087516E-11" iyy="1.29306620584026E-06" iyz="5.37686733212399E-11" izz="2.71087831523932E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/grippers/woan_picker/Link_R3.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+  </link>
+  <link name="woan_picker_right_finger_link_4">
+    <inertial>
+      <origin xyz="-0.0220032855488068 -0.00513457157118936 1.03925625050184E-07" rpy="0 0 0" />
+      <mass value="0.0117168072399107" />
+      <inertia ixx="3.5857264908176E-06" ixy="-4.68000105600657E-07" ixz="1.83931461927901E-11" iyy="5.00937408279313E-06" iyz="9.0368373155906E-12" izz="2.11087622904067E-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/grippers/woan_picker/Link_R4.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.894117647058823 0.549019607843137 0.631372549019608 1" />
+      </material>
+    </visual>
+  </link>
+  <joint name="woan_picker_left_finger_joint" type="revolute">
+    <origin xyz="0.03 0 0" rpy="0 0 -1.1" />
+    <parent link="woan_picker_base_link" />
+    <child link="woan_picker_left_finger_link_1" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.1" effort="0" velocity="0" />
+  </joint>
+  <joint name="woan_picker_left_finger_joint_2" type="revolute">
+    <origin xyz="0.029415 0.0058967 0" rpy="0 0 -0.37" />
+    <parent link="woan_picker_left_finger_link_1" />
+    <child link="woan_picker_left_finger_link_2" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="0.37" effort="0" velocity="0" />
+  </joint>
+  <joint name="woan_picker_left_finger_joint_3" type="revolute">
+    <origin xyz="0.0087088 -0.018004 0" rpy="0 0 1.34" />
+    <parent link="woan_picker_left_finger_link_2" />
+    <child link="woan_picker_left_finger_link_3" />
+    <axis xyz="0 0 -1" />
+    <limit lower="0" upper="1.34" effort="0" velocity="0" />
+  </joint>
+  <joint name="woan_picker_left_finger_joint_4" type="revolute">
+    <origin xyz="0.0139998 -0.0150993 0" rpy="0 0 -1.27" />
+    <parent link="woan_picker_base_link" />
+    <child link="woan_picker_left_finger_link_4" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.27" effort="0" velocity="0" />
+  </joint>
+  <joint name="woan_picker_right_finger_joint" type="revolute">
+    <origin xyz="-0.03 0 0" rpy="0 0 1.1" />
+    <parent link="woan_picker_base_link" />
+    <child link="woan_picker_right_finger_link_1" />
+    <axis xyz="0 0 -1" />
+    <limit lower="0" upper="1.1" effort="0" velocity="0" />
+  </joint>
+  <joint name="woan_picker_right_finger_joint_2" type="revolute">
+    <origin xyz="-0.029415 0.0058972 0" rpy="0 0 0.37" />
+    <parent link="woan_picker_right_finger_link_1" />
+    <child link="woan_picker_right_finger_link_2" />
+    <axis xyz="0 0 -1" />
+    <limit lower="0" upper="0.37" effort="0" velocity="0" />
+  </joint>
+  <joint name="woan_picker_right_finger_joint_3" type="revolute">
+    <origin xyz="-0.0087091 -0.018004 0" rpy="0 0 -1.34" />
+    <parent link="woan_picker_right_finger_link_2" />
+    <child link="woan_picker_right_finger_link_3" />
+    <axis xyz="0 0 1" />
+    <limit lower="0" upper="1.34" effort="0" velocity="0" />
+  </joint>
+  <joint name="woan_picker_right_finger_joint_4" type="revolute">
+    <origin xyz="-0.0140001 -0.0150994 0" rpy="0 0 1.27" />
+    <parent link="woan_picker_base_link" />
+    <child link="woan_picker_right_finger_link_4" />
+    <axis xyz="0 0 -1" />
+    <limit lower="0" upper="1.27" effort="0" velocity="0" />
+  </joint>
+</robot>

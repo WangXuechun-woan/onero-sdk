@@ -10,10 +10,12 @@ Quick start::
 
     # CLI — validated vertical left arm with gripper compensation
     python -m onero_sdk.debugui --arm left --channel can0 \
-        --mount a1_vertical --gripper-compensation on
+        --mount humanoid_left --gripper-model omnipicker \
+        --gripper-compensation on
 
     # CLI — dual arm
-    python -m onero_sdk.debugui --arm both --left-channel slcan1 --right-channel slcan0
+    python -m onero_sdk.debugui --arm both --left-channel slcan1 --right-channel slcan0 \
+        --gripper-model omnipicker --gripper-compensation on
 
     # CLI — simulation (no hardware needed)
     python -m onero_sdk.debugui --arm both --sim

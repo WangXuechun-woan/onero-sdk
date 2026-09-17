@@ -53,15 +53,16 @@ let singleArmSide = null;   // 'left' | 'right' | null (dual)
 const armState = {
   left:  { joints: [], limits: null, enabled: false, moving: false, freedrive: false,
            servo_active: false, command_active: false, end_effector: null,
-           model: 'a1_l', num_joints: 7, error_seq: 0 },
+           tool_model: null, gripper: null, model: 'a1_l', num_joints: 7, error_seq: 0 },
   right: { joints: [], limits: null, enabled: false, moving: false, freedrive: false,
            servo_active: false, command_active: false, end_effector: null,
-           model: 'a1_r', num_joints: 7, error_seq: 0 },
+           tool_model: null, gripper: null, model: 'a1_r', num_joints: 7, error_seq: 0 },
 };
 
 // Preview joint values (driven by UI sliders, not hardware)
 const preview = { left: [], right: [] };
 const previewLocked = { left: false, right: false };
+const movejPending = { left: null, right: null }; // null | queued | active
 const dragging = { left: false, right: false };
 
 // Auto-send state (unused timer slot kept for compat)
@@ -157,6 +158,10 @@ resize();
 // ─────────────────────────────────────────────────────────────
 
 const robots     = { left: null, right: null };
+const toolRobots = { left: null, right: null };
+const jointToolGhosts = { left: null, right: null };
+const cartesianToolGhosts = { left: null, right: null };
+const toolOpening = { left: 0.5, right: 0.5 };
 const robotGroups = { left: null, right: null };
 const ghostGroup = { left: null, right: null };
 const ghostAxes  = { left: [], right: [] };
@@ -224,6 +229,115 @@ function applyFrameConfig(side, data) {
   updateMountDisplay(side);
 }
 
+function createUrdfLoader() {
+  const loader = new URDFLoader();
+  loader.loadMeshCb = (path, manager, done) => {
+    const url = path.replace(/^.*(\/assets\/meshes\/)/, '/assets/meshes/');
+    new STLLoader(manager).load(
+      url,
+      geom => done(new THREE.Mesh(geom, new THREE.MeshPhongMaterial({
+        color: 0xaabbcc, side: THREE.DoubleSide,
+      }))),
+      null,
+      err => done(null, err),
+    );
+  };
+  return loader;
+}
+
+function applyToolOpening(side, root, normalized) {
+  if (!root) return;
+  const p = Math.max(0, Math.min(1, Number(normalized)));
+  toolOpening[side] = p;
+  const coupling = armState[side].tool_model?.opening_joints || [];
+  root.traverse(obj => {
+    if (!obj || typeof obj.setJointValue !== 'function' || !obj.name) return;
+    for (const target of coupling) {
+      if (obj.name.endsWith(target.suffix)) {
+        obj.setJointValue(Number(target.offset || 0) + p * Number(target.scale || 0));
+      }
+    }
+  });
+}
+
+function makeToolGhost(tool, color, opacity) {
+  const container = new THREE.Group();
+  const clone = tool.clone(true);
+  clone.traverse(obj => {
+    if (!obj.isMesh) return;
+    const material = new THREE.MeshPhongMaterial({
+      color, transparent: true, opacity, depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    obj.material = material;
+  });
+  container.add(clone);
+  container.userData.toolRoot = clone;
+  container.visible = false;
+  return container;
+}
+
+function updateToolOpening(side, normalized) {
+  applyToolOpening(side, toolRobots[side], normalized);
+  const jointGhost = jointToolGhosts[side];
+  const cartGhost = cartesianToolGhosts[side];
+  if (jointGhost) applyToolOpening(side, jointGhost.userData.toolRoot, normalized);
+  if (cartGhost) applyToolOpening(side, cartGhost.userData.toolRoot, normalized);
+  const value = document.getElementById(`${side}_gripper_value`);
+  const range = document.getElementById(`${side}_gripper_range`);
+  if (value) value.textContent = `${Math.round(toolOpening[side] * 100)}%`;
+  if (range && Number(range.value) !== toolOpening[side]) range.value = toolOpening[side];
+  updateGhost(side);
+}
+
+function commandGripperOpening(side, normalized) {
+  updateToolOpening(side, normalized);
+  const gripper = armState[side].gripper;
+  if (!gripper || !gripper.hardware_control) {
+    setStatus(side, 'visual preview only; no hardware gripper configured');
+    return Promise.resolve({ ok: true, msg: 'visual preview only' });
+  }
+  return api(side, 'gripper/position', { position: toolOpening[side] })
+    .then(d => {
+      setStatus(side, d.msg || (d.ok ? 'gripper command sent' : 'gripper command failed'));
+      return d;
+    });
+}
+
+function loadTool(side) {
+  const spec = armState[side].tool_model;
+  const robot = robots[side];
+  if (!spec || !spec.urdf || !robot || toolRobots[side]) return;
+  const flange = robot.links && robot.links.Link7;
+  if (!flange) {
+    setHud(`Tool mount failed (${side}): Link7 not found`);
+    return;
+  }
+  const loader = createUrdfLoader();
+  loader.load(`/assets/tools/${spec.urdf}`, tool => {
+    applyRealMaterial(tool);
+    const xyz = spec.mount_xyz || [0, 0, 0];
+    const rpy = spec.mount_rpy || [0, 0, 0];
+    tool.position.set(Number(xyz[0]), Number(xyz[1]), Number(xyz[2]));
+    // URDF rpy is fixed-axis roll/pitch/yaw: Rz(yaw) * Ry(pitch) * Rx(roll).
+    // Three.js's matching Euler composition order is ZYX, not XYZ.
+    tool.rotation.set(Number(rpy[0]), Number(rpy[1]), Number(rpy[2]), 'ZYX');
+    flange.add(tool);
+    toolRobots[side] = tool;
+
+    const jointGhost = makeToolGhost(tool, 0x60a5fa, 0.32);
+    ghostGroup[side].add(jointGhost);
+    jointToolGhosts[side] = jointGhost;
+
+    const cartGhost = makeToolGhost(tool, BALL_COLORS[side], 0.38);
+    scene.add(cartGhost);
+    cartesianToolGhosts[side] = cartGhost;
+
+    updateToolOpening(side, Number(spec.opening_default ?? 0.5));
+    setHud(`URDF + tool loaded: ${CFG[side].model} / ${spec.name}`);
+  }, undefined, err => setHud(`Tool load failed (${side}): ${err}`));
+}
+
 function loadRobot(side) {
   const c = CFG[side];
   const group = new THREE.Group();
@@ -236,34 +350,23 @@ function loadRobot(side) {
   gg.visible = showGhost[side];
   scene.add(gg);
 
-  const loader = new URDFLoader();
-  // urdf-loader prepends workingPath to every filename;
-  // our filenames are already absolute (/assets/meshes/...) so
-  // we override loadMeshCb to fetch them directly and skip resolvePath.
-  loader.loadMeshCb = (path, manager, done) => {
-    // strip any accidental workingPath prefix that snuck in
-    const url = path.replace(/^.*(\/assets\/meshes\/)/, '/assets/meshes/');
-    new STLLoader(manager).load(
-      url,
-      geom => done(new THREE.Mesh(geom, new THREE.MeshPhongMaterial({ color: 0xaabbcc, side: THREE.DoubleSide }))),
-      null,
-      err => done(null, err)
-    );
-  };
+  const loader = createUrdfLoader();
   loader.load(`/assets/urdf/${c.model}.urdf`, robot => {
     applyRealMaterial(robot);
     group.add(robot);
     robots[side] = robot;
     updateRobot(side);
     buildGhostAxes(side, robot);
-    setHud(`URDF loaded: ${c.model}`);
+    loadTool(side);
+    if (!armState[side].tool_model) setHud(`URDF loaded: ${c.model}`);
   }, undefined, err => setHud(`URDF load failed (${side}): ${err}`));
 }
 
 function updateRobot(side) {
   const r = robots[side];
   if (!r) return;
-  armState[side].joints.forEach((q, i) => {
+  const displayed = previewLocked[side] ? preview[side] : armState[side].joints;
+  displayed.forEach((q, i) => {
     const j = r.joints[jointName(side, i)];
     if (j) j.setJointValue(q);
   });
@@ -298,6 +401,18 @@ function updateGhost(side) {
     ghostGroup[side].getWorldQuaternion(gq);
     ax.quaternion.copy(gq.invert().multiply(wq));
   });
+
+  const toolGhost = jointToolGhosts[side];
+  const flange = robot.links && robot.links.Link7;
+  if (toolGhost && flange) {
+    ghostGroup[side].updateMatrixWorld(true);
+    flange.updateMatrixWorld(true);
+    const local = new THREE.Matrix4()
+      .copy(ghostGroup[side].matrixWorld).invert()
+      .multiply(flange.matrixWorld);
+    local.decompose(toolGhost.position, toolGhost.quaternion, toolGhost.scale);
+    toolGhost.visible = showGhost[side];
+  }
 
   saved.forEach((q, i) => {
     const j = robot.joints[jointName(side, i)];
@@ -400,6 +515,16 @@ function resetCartesianTarget(side, mode) {
   if (ee && ee.pos) setCartesianInputs(side, mode, ee.pos);
 }
 
+function updateCartesianToolGhost(side) {
+  const ghost = cartesianToolGhosts[side];
+  const robot = robots[side];
+  const flange = robot && robot.links && robot.links.Link7;
+  if (!ghost || !flange || !cartesianBallMode[side]) return;
+  flange.getWorldQuaternion(ghost.quaternion);
+  ghost.position.copy(ballMeshes[side].position);
+  ghost.visible = true;
+}
+
 function activateCartesianBall(side, mode, active) {
   const control = transformControls[side];
   cartesianBallMode[side] = active ? mode : null;
@@ -414,8 +539,10 @@ function activateCartesianBall(side, mode, active) {
     if (pos) ballMeshes[side].position.copy(pos);
     if (ee && ee.pos) setCartesianInputs(side, mode, ee.pos);
     control.attach(ballMeshes[side]);
+    updateCartesianToolGhost(side);
   } else {
     control.detach();
+    if (cartesianToolGhosts[side]) cartesianToolGhosts[side].visible = false;
   }
 }
 
@@ -434,6 +561,7 @@ function updateCartesianBallTarget(side) {
   // while execution speed/acceleration remain bounded by the motion API.
   const target = sceneToEe(ballMeshes[side].position, side);
   setCartesianInputs(side, mode, target);
+  updateCartesianToolGhost(side);
   cartesianDirty[side] = true;
 }
 
@@ -471,6 +599,9 @@ function renderPanel(side) {
   const s      = armState[side];
   const limits = s.limits || Array(7).fill([-3.14, 3.14]);
   const panel  = document.getElementById(c.panel);
+  const hasGripper = Boolean(s.tool_model || s.gripper?.hardware_control);
+  const initialOpening = Number(
+    s.gripper?.position ?? s.tool_model?.opening_default ?? 0.5);
 
   panel.innerHTML = `
 <div class="panelHeader">
@@ -498,6 +629,7 @@ function renderPanel(side) {
   <button class="modeTab" data-mode="servo">Servo</button>
   <button class="modeTab" data-mode="movel">MoveL</button>
   <button class="modeTab" data-mode="movep">MoveP</button>
+  ${hasGripper ? '<button class="modeTab" data-mode="gripper">Gripper</button>' : ''}
   <button class="modeTab" data-mode="freedrive">Freedrive</button>
 </div>
 
@@ -574,6 +706,29 @@ function renderPanel(side) {
   <div class="poseRow" id="${side}_movep_pose">EE: --</div>
 </div>
 
+${hasGripper ? `
+<!-- Gripper hardware / visual control -->
+<div class="modeCard" id="${side}_card_gripper">
+  <div class="cardToolbar">
+    <button class="btn ok" id="${side}_gripper_enable">Enable Gripper</button>
+    <button class="btn warn" id="${side}_gripper_disable">Disable Gripper</button>
+  </div>
+  <div class="cardToolbar">
+    <button class="btn" id="${side}_gripper_close">Close</button>
+    <button class="btn" id="${side}_gripper_mid">50%</button>
+    <button class="btn" id="${side}_gripper_open">Open</button>
+    <span id="${side}_gripper_value" style="margin-left:auto">${Math.round(initialOpening * 100)}%</span>
+  </div>
+  <div class="gripperControl">
+    <span>Closed</span>
+    <input id="${side}_gripper_range" type="range" min="0" max="1" step="0.01" value="${initialOpening}"/>
+    <span>Open</span>
+  </div>
+  <div class="cardInfo">${s.gripper?.hardware_control
+    ? `实体夹爪 CAN 控制已启用（${s.gripper.protocol || 'unknown'}）；拖动时仅预览，释放后发送一次命令。`
+    : '视觉开合预览；未配置实体夹爪协议，不发送硬件命令。'}</div>
+</div>` : ''}
+
 <!-- Freedrive -->
 <div class="modeCard" id="${side}_card_freedrive">
   <div class="cardToolbar">
@@ -595,6 +750,7 @@ function renderPanel(side) {
     preview[side][i] = v;
     previewLocked[side] = true;
     updateGhost(side);
+    updateRobot(side);
   }, () => {
     // change (pointerup / release): send once if Auto is checked
     const auto = panel.querySelector(`#${side}_mj_auto`);
@@ -604,7 +760,9 @@ function renderPanel(side) {
   // ── Servo sliders ──────────────────────────────────
   _buildSliders(`${side}_sv_joints`, side, limits, s.joints, (i, v) => {
     preview[side][i] = v;
+    previewLocked[side] = true;
     updateGhost(side);
+    updateRobot(side);
     if (s.servo_active) {
       api(side, 'servo/target', { joints: preview[side].slice() });
     }
@@ -622,6 +780,12 @@ function renderPanel(side) {
       // initialize targets from the latest measured pose, not stale UI values.
       if (cartesianBallMode[side] && cartesianBallMode[side] !== mode) {
         activateCartesianBall(side, cartesianBallMode[side], false);
+      }
+      if (mode !== 'movej' && mode !== 'servo' && !movejPending[side]) {
+        previewLocked[side] = false;
+        preview[side] = armState[side].joints.slice();
+        updateRobot(side);
+        updateGhost(side);
       }
       if (mode === 'movel' || mode === 'movep') resetCartesianTarget(side, mode);
     };
@@ -680,6 +844,20 @@ function renderPanel(side) {
     api(side, 'stop').then(d => setStatus(side, d.msg));
   };
 
+  // ── Gripper: preview while dragging, one hardware command on release ──
+  const gripperRange = panel.querySelector(`#${side}_gripper_range`);
+  if (gripperRange) {
+    panel.querySelector(`#${side}_gripper_enable`).onclick = () =>
+      api(side, 'gripper/enable').then(d => setStatus(side, d.msg));
+    panel.querySelector(`#${side}_gripper_disable`).onclick = () =>
+      api(side, 'gripper/disable').then(d => setStatus(side, d.msg));
+    gripperRange.oninput = () => updateToolOpening(side, Number(gripperRange.value));
+    gripperRange.onchange = () => commandGripperOpening(side, Number(gripperRange.value));
+    panel.querySelector(`#${side}_gripper_close`).onclick = () => commandGripperOpening(side, 0);
+    panel.querySelector(`#${side}_gripper_mid`).onclick = () => commandGripperOpening(side, 0.5);
+    panel.querySelector(`#${side}_gripper_open`).onclick = () => commandGripperOpening(side, 1);
+  }
+
   // ── Freedrive buttons ─────────────────────────────
   panel.querySelector(`#${side}_fd_start`).onclick = () => {
     const damp = parseFloat(panel.querySelector(`#${side}_fd_damp`).value);
@@ -704,14 +882,24 @@ function _buildSliders(containerId, side, limits, initJoints, onInput, onChange)
       <input type="range" min="${lim[0]}" max="${lim[1]}" step="0.001" value="${q}"
              id="${containerId}_r${i}"/>`;
     const inp = div.querySelector('input');
-    inp.addEventListener('pointerdown', () => { dragging[side] = true; });
-    inp.addEventListener('pointerup',   () => { dragging[side] = false; });
+    const endDrag = () => { dragging[side] = false; };
+    inp.addEventListener('pointerdown', ev => {
+      dragging[side] = true;
+      try { inp.setPointerCapture(ev.pointerId); } catch (_) {}
+    });
+    inp.addEventListener('pointerup', endDrag);
+    inp.addEventListener('pointercancel', endDrag);
+    inp.addEventListener('lostpointercapture', endDrag);
+    inp.addEventListener('blur', endDrag);
     inp.addEventListener('input', () => {
       const v = Number(inp.value);
       document.getElementById(`${containerId}_v${i}`).textContent = fmt(v);
       if (onInput) onInput(i, v);
     });
-    if (onChange) inp.addEventListener('change', () => onChange(i, Number(inp.value)));
+    if (onChange) inp.addEventListener('change', () => {
+      endDrag();
+      onChange(i, Number(inp.value));
+    });
     el.appendChild(div);
   });
 }
@@ -743,13 +931,28 @@ function sendMoveJ(side) {
   const tgt = preview[side];
   if (cur.length && tgt.length) {
     const maxD = Math.max(...tgt.map((q, i) => Math.abs(q - (cur[i] || 0))));
-    if (maxD < MOVEJ_MIN_DELTA) return;
+    if (maxD < MOVEJ_MIN_DELTA) {
+      previewLocked[side] = false;
+      preview[side] = cur.slice();
+      syncSlidersToState(side, cur);
+      updateGhost(side);
+      return;
+    }
   }
   const panel = document.getElementById(CFG[side].panel);
   const speedEl = panel && panel.querySelector(`#${side}_mj_speed`);
   const speed = speedEl ? parseFloat(speedEl.value) || 0.5 : 0.5;
-  api(side, 'movej', { joints: tgt.slice(), speed })
-    .then(d => setStatus(side, `movej: ${d.ok ? 'ok' : 'fail'} ${d.msg || ''}`));
+  movejPending[side] = 'queued';
+  api(side, 'movej', { joints: tgt.slice(), speed }).then(d => {
+    setStatus(side, `movej: ${d.ok ? 'ok' : 'fail'} ${d.msg || ''}`);
+    if (!d.ok) {
+      movejPending[side] = null;
+      previewLocked[side] = false;
+      preview[side] = armState[side].joints.slice();
+      syncSlidersToState(side, preview[side]);
+      updateGhost(side);
+    }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -774,7 +977,7 @@ function updateOverlay(side, state) {
   if (svled) svled.className   = 'servoActive' + (state.servo_active ? ' on' : '');
 
   // Pose rows
-  const ee = state.end_effector;
+  const ee = state.end_effector || state.pose;
   const poseStr = ee
     ? `EE: (${fmt(ee.pos[0])}, ${fmt(ee.pos[1])}, ${fmt(ee.pos[2])})`
     : 'EE: --';
@@ -816,10 +1019,15 @@ function applyState(side, data) {
     s.servo_active  = data.servo_active;
     s.command_active = Boolean(data.command_active);
     s.end_effector  = data.pose || null;
+    s.tool_model    = data.tool_model || null;
+    s.gripper       = data.gripper || null;
     s.model         = data.model || s.model;
     s.urdf_file     = data.urdf_file || s.urdf_file;
     s.num_joints    = data.num_joints || s.num_joints;
     s.error_seq     = nextErrorSeq;
+    if (s.gripper && Number.isFinite(Number(s.gripper.position))) {
+      updateToolOpening(side, Number(s.gripper.position));
+    }
 
     // An unreachable target leaves the arm at its measured pose. Snap the
     // gizmo back once so the next drag starts from reality rather than from
@@ -833,6 +1041,20 @@ function applyState(side, data) {
       ballMeshes[side].position.copy(eeToScene(data.pose.pos, side));
       setCartesianInputs(side, mode, data.pose.pos);
       cartesianDirty[side] = false;
+    }
+
+    if (movejPending[side] === 'queued' && s.command_active) {
+      movejPending[side] = 'active';
+    }
+    const movejFinished = (
+      movejPending[side] === 'active' && !s.command_active
+    ) || (
+      movejPending[side] === 'queued' && !s.command_active && data.msg === 'movej done'
+    );
+    if (movejFinished || hasNewError) {
+      movejPending[side] = null;
+      previewLocked[side] = false;
+      preview[side] = data.joints.slice();
     }
 
     updateRobot(side);

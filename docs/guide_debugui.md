@@ -17,11 +17,14 @@ python -m onero_sdk.debugui --arm left --channel slcan1
 
 # 真机 — 人形竖直安装且带夹爪补偿的单左臂
 python -m onero_sdk.debugui --arm left --channel can0 \
-  --mount humanoid_left --gripper-compensation on
+  --mount humanoid_left --gripper-model omnipicker \
+  --gripper-protocol omnipicker --gripper-compensation on
 
 # 真机 — 双臂
 python -m onero_sdk.debugui --arm both \
-  --left-channel slcan1 --right-channel slcan0
+  --left-channel slcan1 --right-channel slcan0 \
+  --gripper-model omnipicker --gripper-protocol omnipicker \
+  --gripper-compensation on
 
 # MuJoCo 仿真（无需硬件）
 python -m onero_sdk.debugui --arm both --sim
@@ -31,6 +34,10 @@ python -m onero_sdk.debugui --arm right --channel slcan0 --port 8090 --host 0.0.
 ```
 
 启动后打开 `http://<机器IP>:8090` 即可访问。
+
+`--gripper-model omnipicker|woan_picker` 只选择 Link7 上的视觉模型；`--gripper-protocol omnipicker|onero` 才启用实体 CAN 控制，两者不会自动修改 TCP、payload 或重力补偿。协议必须由用户明确指定，SDK 不自动探测，也不会在通信失败时回退到另一种协议。OmniPicker 默认 `Force=0x20`、`Vel/Acc/Dec=0xFF`，可用 `--gripper-force` 和 `--gripper-speed` 调整；最大力高速闭合存在夹伤和机构冲击风险。
+
+Woan Picker 使用 H1 v1.3 模型中的 8 个可动关节、零位偏置和开合行程；左右臂使用相同 Link7→工具安装变换。OmniPicker 来源 URDF 将机构关节冻结为 fixed，因此其浏览器动画是视觉近似。配置实体协议后，Gripper 页签拖动时只预览，释放后发送一次真实位置命令，并显示协议与反馈位置；未配置协议时仍是纯视觉预览。协议、端点校准和生命周期详见 [夹爪与工具模型指南](guide_grippers.md)。
 
 > Debug UI 的 3D 场景用于状态显示和目标交互，不是环境碰撞规划器。MoveJ/MoveL/MoveP 会检查关节、速度、IK 连续性等 SDK 安全条件，但不会根据网页中的桌面、墙体或另一条机械臂自动规划避障路径；真机目标必须由操作者确认工作空间安全。
 
@@ -164,7 +171,8 @@ start_lab(arm, port=8090, block=True)
 - **Apply**：目标位姿先解 IK，再执行关节空间插值
 - 路径不保证为直线；需要直线路径时使用 MoveL
 - 目标位置可任意拖动或输入；可达性由 IK 和 URDF 关节限位判断
-- 未指定姿态时保持命令开始前的当前姿态
+- 未指定姿态时保持命令开始前的当前姿态，因此“位置可达”不代表“保持该姿态也可达”；接近工作空间或腕关节限位时可能安全拒绝
+- 端点 IK 使用最多 50 次迭代及 `1 mm / 2 mrad` 收敛阈值；明显不可达的目标不会下发到真机
 - **speed**：关节速度（rad/s）
 
 #### Freedrive 标签页
@@ -210,6 +218,9 @@ Debug UI 暴露了完整的 REST API，可从其他工具调用：
 | `POST` | `/api/servo/stop` | — | 停止伺服 |
 | `POST` | `/api/freedrive/start` | `{"damping":0.5}` | 进入 freedrive |
 | `POST` | `/api/freedrive/stop` | — | 退出 freedrive |
+| `POST` | `/api/gripper/enable` | — | 仅使能实体夹爪，不使能机械臂关节 |
+| `POST` | `/api/gripper/disable` | — | 仅失能实体夹爪 |
+| `POST` | `/api/gripper/position` | `{"position":0.0..1.0}` | 实体夹爪开度（0=闭合，1=打开） |
 
 ### 状态 JSON 结构
 
@@ -221,6 +232,22 @@ Debug UI 暴露了完整的 REST API，可从其他工具调用：
   "pose_frame": "world",
   "R_world_base": [[0,1,0],[0,0,1],[1,0,0]],
   "base_position": [0.0, 0.18, 0.0],
+  "tool_model": {
+    "name": "omnipicker",
+    "urdf": "omnipicker.urdf",
+    "mount_xyz": [0, 0, 0],
+    "mount_rpy": [0, 0, -1.5708]
+  },
+  "gripper": {
+    "hardware_control": true,
+    "protocol": "onero",
+    "enabled": true,
+    "position": 0.5,
+    "velocity": 0.0,
+    "force": 0.0,
+    "fault_code": 0,
+    "motion_state": 1
+  },
   "enabled": true,
   "moving": false,
   "freedrive": false,
@@ -259,6 +286,13 @@ python -m onero_sdk.debugui --help
   --right-channel CHANNEL   双臂右臂 CAN 通道（默认: slcan0）
   --arm-spacing METERS      双臂基座间距（默认: 0.36 m）
   --mount PRESET            安装方向；default 保留原版单/双臂默认值
+  --gripper-model {none,omnipicker,woan_picker}
+                            浏览器视觉模型，不隐式选择硬件协议
+  --gripper-protocol {none,omnipicker,onero}
+                            显式选择实体夹爪 CAN 协议（默认: none）
+  --gripper-can-id ID       Legacy 命令 ID（默认: 0x08）
+  --gripper-force 0..1      Legacy 力矩（默认: 32/255）
+  --gripper-speed 0..1      Legacy 速度（默认: 1.0）
   --gripper-compensation {off,on}
                             是否启用夹爪重力补偿（默认: off）
   --sim                     使用 MuJoCo 仿真后端

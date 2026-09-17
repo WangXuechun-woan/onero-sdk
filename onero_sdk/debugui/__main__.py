@@ -39,6 +39,31 @@ def main() -> None:
         choices=["off", "on"],
         help="Select the validated A1 gripper gravity profile (default: off)",
     )
+    ap.add_argument(
+        "--gripper-model",
+        default="none",
+        choices=["none", "omnipicker", "woan_picker"],
+        help=("Visual gripper model shown on both arms in Debug UI; this does "
+              "not change TCP, payload, gravity compensation, or CAN protocol"),
+    )
+    ap.add_argument(
+        "--gripper-protocol", default="none",
+        choices=["none", "omnipicker", "onero"],
+        help=("Physical CAN gripper protocol; must be selected explicitly "
+              "(default: none, sends no gripper CAN frames)"),
+    )
+    ap.add_argument(
+        "--gripper-can-id", type=lambda value: int(value, 0), default=0x08,
+        help="Legacy OmniPicker CAN ID (default: 0x08)",
+    )
+    ap.add_argument(
+        "--gripper-force", type=float, default=0x20 / 0xFF,
+        help="Legacy OmniPicker normalized force, 0..1 (default: 32/255)",
+    )
+    ap.add_argument(
+        "--gripper-speed", type=float, default=1.0,
+        help="Legacy OmniPicker normalized speed, 0..1 (default: 1.0)",
+    )
     ap.add_argument("--sim", action="store_true",
                     help="Use MuJoCo simulation backend instead of real hardware")
     ap.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
@@ -51,6 +76,28 @@ def main() -> None:
     except ImportError as exc:
         print(f"[debugui] import error: {exc}", file=sys.stderr)
         sys.exit(1)
+
+    tool_model = None if args.gripper_model == "none" else args.gripper_model
+    if not 0.0 <= args.gripper_force <= 1.0:
+        ap.error("--gripper-force must be in [0, 1]")
+    if not 0.0 <= args.gripper_speed <= 1.0:
+        ap.error("--gripper-speed must be in [0, 1]")
+    if not 0 <= args.gripper_can_id <= 0x7FF:
+        ap.error("--gripper-can-id must be an 11-bit CAN ID")
+    if args.sim and args.gripper_protocol != "none":
+        ap.error("--gripper-protocol controls real CAN hardware and cannot be used with --sim")
+
+    def make_gripper():
+        if args.gripper_protocol == "none":
+            return None
+        from onero_sdk import OmniPickerGripper, OneroGripper
+        common = {
+            "force": int(round(args.gripper_force * 0xFF)),
+            "velocity": int(round(args.gripper_speed * 0xFF)),
+        }
+        if args.gripper_protocol == "omnipicker":
+            return OmniPickerGripper(can_id=args.gripper_can_id, **common)
+        return OneroGripper()
 
     if args.sim:
         # Simulation backend. Keep joint/rate limits, but disable the hardware
@@ -72,7 +119,9 @@ def main() -> None:
                 safety=sim_safety,
             )
             dual.enable()
-            start_lab_dual(dual, host=args.host, port=args.port, block=True)
+            start_lab_dual(
+                dual, host=args.host, port=args.port, block=True,
+                left_tool_model=tool_model, right_tool_model=tool_model)
         else:
             model = "A1R" if args.arm == "right" else "A1L"
             arm = Arm(
@@ -81,7 +130,9 @@ def main() -> None:
                 safety=sim_safety,
             )
             arm.enable()
-            start_lab(arm, side=args.arm, host=args.host, port=args.port, block=True)
+            start_lab(
+                arm, side=args.arm, host=args.host, port=args.port, block=True,
+                tool_model=tool_model)
     else:
         # Real hardware
         mounting = None if args.mount == "default" else args.mount
@@ -93,6 +144,8 @@ def main() -> None:
                 right_channel=args.right_channel,
                 left_with_gripper=with_gripper,
                 right_with_gripper=with_gripper,
+                left_end_effector=make_gripper(),
+                right_end_effector=make_gripper(),
                 arm_spacing=args.arm_spacing,
             )
             if mounting is not None:
@@ -101,18 +154,23 @@ def main() -> None:
                     right_mounting=mounting,
                 )
             dual = DualArm.create(**dual_kwargs)
-            start_lab_dual(dual, host=args.host, port=args.port, block=True)
+            start_lab_dual(
+                dual, host=args.host, port=args.port, block=True,
+                left_tool_model=tool_model, right_tool_model=tool_model)
         else:
             model = "A1R" if args.arm == "right" else "A1L"
             channel = args.channel or ("slcan0" if args.arm == "right" else "slcan1")
             arm_kwargs = dict(
                 channel=channel,
                 with_gripper=with_gripper,
+                end_effector=make_gripper(),
             )
             if mounting is not None:
                 arm_kwargs["mounting"] = mounting
             arm = Arm(model, **arm_kwargs)
-            start_lab(arm, side=args.arm, host=args.host, port=args.port, block=True)
+            start_lab(
+                arm, side=args.arm, host=args.host, port=args.port, block=True,
+                tool_model=tool_model)
 
 
 if __name__ == "__main__":

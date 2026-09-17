@@ -1,13 +1,14 @@
 """
 End-effector abstraction for grippers and dexterous hands.
 
-The SDK defines the interface; concrete implementations handle protocol details.
-Built-in implementations for known hardware will be added as sub-modules.
-Third-party or custom end effectors: inherit from EndEffector or Gripper.
+The SDK defines this interface; concrete CAN drivers for known grippers live
+in :mod:`onero_sdk.grippers`. Third-party or custom end effectors can inherit
+from EndEffector or Gripper.
 
 Example — built-in gripper::
 
-    arm = Arm("A1R", channel="can0", end_effector=OneroGripper(can_id=0x08))
+    arm = Arm("A1R", channel="can0",
+              end_effector=OmniPickerGripper(can_id=0x08))
     arm.enable()          # also enables the gripper
     arm.gripper.close()   # close = grasp
 

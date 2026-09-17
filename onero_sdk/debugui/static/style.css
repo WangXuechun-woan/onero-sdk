@@ -251,7 +251,20 @@ body {
   font-size: 11px;
 }
 
-.joint input[type=range] { width: 100%; }
+.joint input[type=range] { width: 100%; touch-action: none; }
+
+.gripperControl {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 4px;
+}
+
+.gripperControl input[type=range] {
+  width: 100%;
+  touch-action: none;
+}
 
 /* ── Buttons ─────────────────────────────────────── */
 .btn {

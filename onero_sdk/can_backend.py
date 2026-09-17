@@ -101,6 +101,17 @@ class CanBackend(ArmBackend):
     def num_joints(self) -> int:
         return self._num_joints
 
+    def bind_can_device(self, device) -> None:
+        """Bind an auxiliary CAN device to this backend's bus and I/O lock.
+
+        End effectors share the Arm-owned transport so direct SLCAN devices
+        are opened only once and arm/gripper receive operations cannot race.
+        """
+        bind = getattr(device, "bind_transport", None)
+        if bind is None:
+            raise TypeError("CAN device must provide bind_transport(bus, io_lock)")
+        bind(self._bus, self._lock)
+
     def enable(self) -> ArmState:
         with self._lock:
             return self._enable_impl()
