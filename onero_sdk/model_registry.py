@@ -38,6 +38,8 @@ class ArmModel:
     joints: list[JointSpec]
     default_kp: float = 50.0
     default_kd: float = 1.0
+    default_kp_values: tuple[float, ...] | None = None
+    default_kd_values: tuple[float, ...] | None = None
     control_freq: float = 100.0
     gear_ratios: list[float] | None = None
     rotor_inertias: list[float] | None = None
@@ -117,6 +119,10 @@ _CAN_CONFIG = {
         "joint_velocity_limits": [3.0, 3.0, 3.0, 3.0, 6.0, 6.0, 6.0],
         "default_kp": 50.0,
         "default_kd": 1.0,
+        # Calibrated MIT impedance gains in A1 joint order. Velocity motions
+        # use these model defaults internally; callers need not tune gains.
+        "default_kp_values": [150.0, 150.0, 150.0, 150.0, 40.0, 40.0, 40.0],
+        "default_kd_values": [4.0, 4.0, 4.0, 4.0, 1.0, 1.0, 1.0],
         "control_freq": 200.0,
         # A1 uses DM4340 on J1-J4 and DM4310 on J5-J7.
         "gear_ratios": [48.19, 48.19, 48.19, 48.19, 10.0, 10.0, 10.0],
@@ -185,6 +191,8 @@ def _build_model(name: str, variant: str = "r") -> ArmModel:
         joints=joints,
         default_kp=can_cfg["default_kp"],
         default_kd=can_cfg["default_kd"],
+        default_kp_values=tuple(can_cfg.get("default_kp_values", [])) or None,
+        default_kd_values=tuple(can_cfg.get("default_kd_values", [])) or None,
         control_freq=can_cfg["control_freq"],
         gear_ratios=can_cfg.get("gear_ratios"),
         rotor_inertias=can_cfg.get("rotor_inertias"),
@@ -236,6 +244,8 @@ def get_model(name: str) -> ArmModel:
         joints=model.joints,
         default_kp=model.default_kp,
         default_kd=model.default_kd,
+        default_kp_values=model.default_kp_values,
+        default_kd_values=model.default_kd_values,
         control_freq=model.control_freq,
         gear_ratios=model.gear_ratios,
         rotor_inertias=model.rotor_inertias,

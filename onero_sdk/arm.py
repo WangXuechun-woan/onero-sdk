@@ -223,6 +223,7 @@ class Arm(ArmTransformsMixin):
             get_state=lambda: self._state,
             set_state=self._set_state_locked,
             gravity_torques_fn=self._gravity_torques,
+            velocity_gains_fn=lambda q: self._velocity_gains(q),
         )
 
         # Force mode state
@@ -1964,6 +1965,23 @@ class Arm(ArmTransformsMixin):
         """Compute adaptive kp/kd for current configuration. Falls back to fixed gains."""
         return self._gain_policy.compute_adaptive(q, self.num_joints)
 
+    def _velocity_gains(self, q) -> tuple[list[float], list[float]]:
+        """Return model-calibrated MIT gains for SpeedJ/SpeedL."""
+        kps = self._model_info.default_kp_values
+        kds = self._model_info.default_kd_values
+        if kps is None or kds is None:
+            return self._compute_gains(q)
+        if len(kps) != self.num_joints or len(kds) != self.num_joints:
+            raise OneroConfigError(
+                "model velocity gain arrays must match the joint count"
+            )
+        if (any(not math.isfinite(v) or not 0.0 <= v <= 500.0 for v in kps)
+                or any(not math.isfinite(v) or not 0.0 <= v <= 5.0 for v in kds)):
+            raise OneroConfigError(
+                "model velocity gains exceed MIT codec ranges"
+            )
+        return list(kps), list(kds)
+
     def get_joint_limits(self) -> list[tuple[float, float]]:
         """
         Get joint position limits.
@@ -2261,6 +2279,7 @@ class Arm(ArmTransformsMixin):
             get_state=lambda: self._state,
             set_state=self._set_state_locked,
             gravity_torques_fn=self._gravity_torques,
+            velocity_gains_fn=lambda q: self._velocity_gains(q),
             collision_detector=self._collision_detector,
         )
 
@@ -2275,6 +2294,7 @@ class Arm(ArmTransformsMixin):
             get_state=lambda: self._state,
             set_state=self._set_state_locked,
             gravity_torques_fn=self._gravity_torques,
+            velocity_gains_fn=lambda q: self._velocity_gains(q),
         )
 
     @property

@@ -110,23 +110,26 @@ def test_speedj_does_not_drive_outward_through_joint_limit():
     assert backend.q[0] <= 3.14
 
 
-def test_speedj_uses_integrated_position_reference_with_moderate_gains():
+def test_speedj_uses_model_calibrated_per_joint_mit_gains():
     backend = RecordingVelocityBackend()
     arm = Arm(
         "A1R",
         backend=backend,
-        safety=SafetyConfig(max_velocity=5.0, tracking_error_hard_threshold=0,
-                            tracking_error_soft_threshold=0),
+        safety=SafetyConfig(
+            max_velocity=5.0,
+            tracking_error_hard_threshold=0,
+            tracking_error_soft_threshold=0,
+        ),
     )
     arm.enable()
-
-    arm.speedj([0.5, 0, 0, 0, 0, 0, 0], acceleration=10.0, duration=0.1)
+    arm.speedj([0.5, 0, 0, 0, 0, 0, 0],
+               acceleration=10.0, duration=0.1)
 
     moving = [s for s in backend.samples if s["velocities"][0] > 0]
     assert moving
     assert all(s["positions"][0] > s["q_before"][0] for s in moving)
-    assert all(0 < s["kps"][0] <= 10.0 for s in moving)
-    assert all(0 < s["kds"][0] < 5.0 for s in moving)
+    assert moving[0]["kps"] == [150.0, 150.0, 150.0, 150.0, 40.0, 40.0, 40.0]
+    assert moving[0]["kds"] == [4.0, 4.0, 4.0, 4.0, 1.0, 1.0, 1.0]
 
 
 def test_speedj_accelerates_from_measured_velocity_without_step_change():

@@ -144,9 +144,9 @@ finally:
 
 ### Velocity Control (speedj / speedl)
 
-**What it does**: `speedj` and `speedl` control joint velocities and Cartesian velocities respectively. The arm smoothly accelerates to the target velocity and decelerates to stop after the specified duration.
+**What it does**: `speedj` and `speedl` control joint and Cartesian velocity respectively. The arm smoothly accelerates to the target velocity and decelerates to stop after the specified duration. A1 MIT velocity control uses built-in per-joint gains (J1–J4: `kp=150, kd=4`; J5–J7: `kp=40, kd=1`), so normal callers do not tune controller gains.
 
-**When to use**: When you need to control motion speed rather than position. Examples: conveyor tracking (match belt speed), continuous feed machining, constant-speed scanning, and velocity-synchronized cooperative tasks.
+**When to use**: When you need to control motion speed rather than position. Examples: conveyor tracking, continuous feed machining, constant-speed scanning, and velocity-synchronized cooperative tasks. Velocity commands do not guarantee an exact endpoint after a forward/reverse pair; use `movej`/`movel` when endpoint accuracy matters. Configure physical tool payload and CoG for reliable low-speed Cartesian tracking.
 
 **Demo**: A joint moves at constant velocity with smooth acceleration/deceleration ramps.
 

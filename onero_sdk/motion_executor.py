@@ -56,6 +56,9 @@ class MotionExecutor:
                  set_state: Callable[[ArmState], None],
                  gravity_torques_fn: Optional[Callable[[list[float]], list[float]]] = None,
                  collision_detector=None,
+                 velocity_gains_fn: Optional[
+                     Callable[[list[float]], tuple[list[float], list[float]]]
+                 ] = None,
                  velocity_kp: float = 5.0,
                  velocity_kd: float = 0.5,
                  velocity_position_lead: float = 0.1):
@@ -67,6 +70,7 @@ class MotionExecutor:
         self._set_state = set_state
         self._gravity_torques_fn = gravity_torques_fn
         self._collision_detector = collision_detector
+        self._velocity_gains_fn = velocity_gains_fn
         self._velocity_kp = velocity_kp
         self._velocity_kd = velocity_kd
         self._velocity_position_lead = velocity_position_lead
@@ -118,11 +122,16 @@ class MotionExecutor:
                 if self._gravity_torques_fn:
                     g = self._gravity_torques_fn(list(state.joints))
                     n = len(state.joints)
+                    if self._velocity_gains_fn is not None:
+                        kps, kds = self._velocity_gains_fn(list(state.joints))
+                    else:
+                        kps = [self._velocity_kp] * n
+                        kds = [self._velocity_kd] * n
                     state = self._backend.command(
                         positions=velocity_q_ref,
                         velocities=safe_vel,
-                        kps=[self._velocity_kp] * n,
-                        kds=[self._velocity_kd] * n,
+                        kps=kps,
+                        kds=kds,
                         torques=g,
                     )
                 else:

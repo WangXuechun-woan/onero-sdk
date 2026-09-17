@@ -6,9 +6,12 @@ channel: "can0"
 # when a physical gripper is installed and its gravity profile is required.
 with_gripper: false
 
-# Control gains (optional — defaults from model registry)
+# Position-control fallback gains (optional — defaults from model registry)
 # kp: 50.0
 # kd: 1.0
+# SpeedJ/SpeedL use built-in A1 per-joint MIT gains:
+#   kp: [150, 150, 150, 150, 40, 40, 40]
+#   kd: [4, 4, 4, 4, 1, 1, 1]
 
 # URDF for FK/IK (optional — required for movel/movep/servop)
 # urdf: "onero_sdk/urdf/A1/a1_r.urdf"
