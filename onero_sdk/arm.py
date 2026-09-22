@@ -129,7 +129,7 @@ class Arm(ArmTransformsMixin):
             from .can_backend import CanBackend
             raw_backend = CanBackend(
                 channel, self._model_info.joints,
-                on_miss=self._on_can_miss,
+                on_response=self._on_can_response,
                 on_fault=self._on_can_fault,
                 bus=can_bus,
             )
@@ -2470,10 +2470,10 @@ class Arm(ArmTransformsMixin):
 
     # ─── Private ──────────────────────────────────────────────────────────────
 
-    def _on_can_miss(self, joint_idx: int, count: int) -> None:
-        """Called by CanBackend when a motor frame is missed."""
+    def _on_can_response(self, joint_idx: int, received: bool) -> None:
+        """Track consecutive losses, clearing the count after each response."""
         if hasattr(self, '_safety'):
-            self._safety.record_response(joint_idx, False)
+            self._safety.record_response(joint_idx, received)
 
     def _on_can_fault(self, joint_idx: int, error_code: int) -> None:
         """Called by CanBackend when a motor reports a hardware fault."""

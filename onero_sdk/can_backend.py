@@ -46,7 +46,8 @@ class CanBackend(ArmBackend):
                  recv_timeout: float = _RECV_TIMEOUT,
                  on_miss: Optional[callable] = None,
                  on_fault: Optional[callable] = None,
-                 bus: Optional[CanTransport] = None):
+                 bus: Optional[CanTransport] = None,
+                 on_response: Optional[callable] = None):
         """
         Args:
             channel: SocketCAN interface name (e.g. "can0"). Must be UP when
@@ -57,6 +58,8 @@ class CanBackend(ArmBackend):
             on_fault: Callback(joint_index, error_code) on motor hardware fault.
             bus: Optional transport implementing the CanBus interface. Ownership
                  transfers to this backend and it is closed by close().
+            on_response: Callback(joint_index, received) for every joint in a
+                         command response batch, including successful responses.
         """
         if bus is None and channel is None:
             raise ValueError("channel is required when bus is not provided")
@@ -66,7 +69,11 @@ class CanBackend(ArmBackend):
         self._recv_timeout = recv_timeout
         self._on_miss = on_miss
         self._on_fault = on_fault
-        self._lock = threading.Lock()
+        self._on_response = on_response
+        # A safety callback can synchronously disable this backend while a
+        # command holds the transport lock. Preserve I/O serialization while
+        # allowing that same-thread emergency-stop path to re-enter disable().
+        self._lock = threading.RLock()
 
         if bus is not None:
             self._bus = bus
@@ -340,6 +347,9 @@ class CanBackend(ArmBackend):
                     logger.error(f"Joint {i}: {self._miss_count[i]} consecutive misses — possible disconnect")
                 if self._on_miss:
                     self._on_miss(i, self._miss_count[i])
+
+            if self._on_response:
+                self._on_response(i, frame is not None)
 
             joints.append(self._last_states[i].position)
             vels.append(self._last_states[i].velocity)
