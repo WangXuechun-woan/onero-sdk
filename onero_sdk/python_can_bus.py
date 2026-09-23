@@ -13,17 +13,52 @@ from .can_bus import (
 )
 
 
+def _create_buffered_slcan_bus(can_module, options):
+    """Use the same configuration resolution as can.Bus before specialization."""
+    from ._buffered_slcan import BufferedSlcanBus
+
+    @can_module.util.deprecated_args_alias(
+        deprecation_start="4.2.0", deprecation_end="5.0.0",
+        bustype="interface", context="config_context",
+    )
+    def create(channel=None, interface=None, config_context=None,
+               ignore_config=False, **bus_options):
+        if interface is not None:
+            bus_options["interface"] = interface
+        if channel is not None:
+            bus_options["channel"] = channel
+        if not ignore_config:
+            bus_options = can_module.util.load_config(
+                config=bus_options, context=config_context,
+            )
+        bus_options.pop("interface")
+        channel = bus_options.pop("channel", channel)
+        if channel is None:
+            return BufferedSlcanBus(**bus_options)
+        return BufferedSlcanBus(channel, **bus_options)
+
+    return create(**options)
+
+
 class PythonCanBus:
     """Adapt a :mod:`python-can` Bus to the SDK CAN transport interface.
 
     ``python-can`` is imported lazily so the core SDK keeps no mandatory
     dependency on it. The transport owns the created Bus and shuts it down in
     :meth:`close`.
+
+    ``buffered_slcan=True`` uses bulk serial reads and arm-command writes
+    with python-can's existing SLCAN receive parser. It is opt-in and leaves other python-can interfaces unchanged.
     """
 
     def __init__(self, channel: str, interface: str = "slcan",
                  bitrate: int = 1_000_000,
-                 tty_baudrate: Optional[int] = None, **kwargs):
+                 tty_baudrate: Optional[int] = None,
+                 buffered_slcan: bool = False, **kwargs):
+        if not isinstance(buffered_slcan, bool):
+            raise ValueError("buffered_slcan must be a bool")
+        if buffered_slcan and interface != "slcan":
+            raise ValueError("buffered_slcan is only supported for interface='slcan'")
         try:
             import can
         except ImportError as exc:
@@ -42,7 +77,10 @@ class PythonCanBus:
             options["tty_baudrate"] = tty_baudrate
 
         self._can = can
-        self._bus = can.Bus(**options)
+        if buffered_slcan:
+            self._bus = _create_buffered_slcan_bus(can, options)
+        else:
+            self._bus = can.Bus(**options)
         self._channel = channel
         self._interface = interface
         self._closed = False
@@ -55,9 +93,7 @@ class PythonCanBus:
     def interface(self) -> str:
         return self._interface
 
-    def send(self, can_id: int, data: bytes) -> None:
-        if self._closed:
-            raise RuntimeError("PythonCanBus is closed")
+    def _make_message(self, can_id: int, data: bytes):
         payload = bytes(data)
         if len(payload) > 8:
             raise ValueError("Classic CAN payload cannot exceed 8 bytes")
@@ -66,12 +102,28 @@ class PythonCanBus:
         arbitration_id = (
             can_id & CAN_EFF_MASK if is_extended else can_id & CAN_SFF_MASK
         )
-        message = self._can.Message(
+        return self._can.Message(
             arbitration_id=arbitration_id,
             data=payload,
             is_extended_id=is_extended,
         )
-        self._bus.send(message)
+
+    def send(self, can_id: int, data: bytes) -> None:
+        if self._closed:
+            raise RuntimeError("PythonCanBus is closed")
+        self._bus.send(self._make_message(can_id, data))
+
+    def send_batch(self, frames) -> None:
+        """Validate all frames first; use bulk writes when the bus supports it."""
+        if self._closed:
+            raise RuntimeError("PythonCanBus is closed")
+        messages = [self._make_message(can_id, data) for can_id, data in frames]
+        batch_send = getattr(self._bus, "send_batch", None)
+        if callable(batch_send):
+            batch_send(messages)
+        else:
+            for message in messages:
+                self._bus.send(message)
 
     def recv(self, timeout: float = 0.01) -> Optional[CanFrame]:
         if self._closed:

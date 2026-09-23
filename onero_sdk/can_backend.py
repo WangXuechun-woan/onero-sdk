@@ -241,8 +241,7 @@ class CanBackend(ArmBackend):
                 ))
                 for i, motor in enumerate(self._motors)
             ]
-            for frame_id, data in frames:
-                self._bus.send(frame_id, data)
+            self._send_frames(frames)
 
             return self._collect_responses(ts)
 
@@ -256,8 +255,7 @@ class CanBackend(ArmBackend):
                 (vel_frame_id(motor.can_id), encode_velocity(velocities[i]))
                 for i, motor in enumerate(self._motors)
             ]
-            for frame_id, data in frames:
-                self._bus.send(frame_id, data)
+            self._send_frames(frames)
 
             return self._collect_responses(ts)
 
@@ -272,8 +270,7 @@ class CanBackend(ArmBackend):
                 ))
                 for i, motor in enumerate(self._motors)
             ]
-            for frame_id, data in frames:
-                self._bus.send(frame_id, data)
+            self._send_frames(frames)
 
             return self._collect_responses(ts)
 
@@ -311,6 +308,16 @@ class CanBackend(ArmBackend):
 
     # ─── Private ─────────────────────────────────────────────────────────────
 
+    def _send_frames(self, frames) -> None:
+        # Bulk serial writes are optional; native SocketCAN and custom
+        # transports retain their existing per-frame send path.
+        batch_send = getattr(self._bus, "send_batch", None)
+        if callable(batch_send):
+            batch_send(frames)
+        else:
+            for frame_id, data in frames:
+                self._bus.send(frame_id, data)
+
     def _collect_responses(self, timestamp: float) -> ArmState:
         """
         Collect response frames for all motors after a batch send.
@@ -342,9 +349,10 @@ class CanBackend(ArmBackend):
                 # Missed frame — use last known state
                 self._miss_count[i] += 1
                 if self._miss_count[i] == 3:
-                    logger.warning(f"Joint {i}: 3 consecutive missed frames")
+                    logger.warning("%s: Joint %d: 3 consecutive missed frames", self._channel, i)
                 elif self._miss_count[i] >= 10:
-                    logger.error(f"Joint {i}: {self._miss_count[i]} consecutive misses — possible disconnect")
+                    logger.error("%s: Joint %d: %d consecutive misses — possible disconnect",
+                                 self._channel, i, self._miss_count[i])
                 if self._on_miss:
                     self._on_miss(i, self._miss_count[i])
 
