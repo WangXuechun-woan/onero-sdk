@@ -2,7 +2,7 @@
 MuJoCo 动力学参数辨识演示。
 
 运行方式:
-    python examples/calibration_demo.py
+    python examples/15_dynamics_calibration.py
 
 会弹出 MuJoCo viewer 窗口，可以观察标定过程中的运动范围。
 """

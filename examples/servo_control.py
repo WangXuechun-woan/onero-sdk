@@ -22,7 +22,7 @@ try:
 
         # Generate sine wave targets for joints 1 and 3
         joints = [0.0] * 7
-        joints[1] = 0.5 * math.sin(2 * math.pi * 0.5 * t)
+        joints[1] = 0.3 * math.sin(2 * math.pi * 0.5 * t)
         joints[3] = -0.3 * math.sin(2 * math.pi * 0.5 * t)
 
         # Send single-frame command

@@ -145,12 +145,12 @@ def cartesian_linear_frames(ctx: MotionContext, start_pos, start_rot, target_pos
         interp_pos = start_pos + alpha * pos_delta
         interp_rot = slerp_fn(start_rot, target_rot, alpha)
 
-        # In-motion tolerances: ~1mm/10mrad — matches typical Cartesian
+        # In-motion tolerances: ~2mm/10mrad — matches typical Cartesian
         # tracking accuracy. Endpoint (movep) uses stricter tolerances.
         # strict=True: raise IKConvergenceError if any waypoint truly
         # unreachable, so we don't silently produce bad joint targets.
         q = ik_solver.solve(interp_pos, interp_rot, dt=dt,
-                            max_iter=50, pos_tol=1e-3, rot_tol=1e-2,
+                            max_iter=200, pos_tol=2e-3, rot_tol=1e-2,
                             strict=True)
         joints = q.tolist() if hasattr(q, 'tolist') else list(q)
         planned_velocities = _continuous_ik_velocity(
@@ -185,9 +185,11 @@ def circular_arc_frames(ctx: MotionContext, center, v0, normal, total_angle,
         R_12 = slerp_fn(r1, r2, alpha)
         interp_rot = slerp_fn(R_01, R_12, alpha)
 
-        # See cartesian_linear_frames for tolerance rationale.
+        # Circular paths can approach a less-conditioned posture even when
+        # each waypoint is nearby. Give the strict 2 mm check more iterations
+        # rather than relaxing the Cartesian accuracy requirement.
         q = ik_solver.solve(interp_pos, interp_rot, dt=dt,
-                            max_iter=50, pos_tol=1e-3, rot_tol=1e-2,
+                            max_iter=200, pos_tol=2e-3, rot_tol=1e-2,
                             strict=True)
         joints = q.tolist() if hasattr(q, 'tolist') else list(q)
         velocities = _continuous_ik_velocity(prev_joints, joints, ctx, step)

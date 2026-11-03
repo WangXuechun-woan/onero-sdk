@@ -1105,26 +1105,26 @@ logging.getLogger("onero_sdk").setLevel(logging.DEBUG)
 
 | 层级 | 示例 | 说明 |
 |------|------|------|
-| SDK 直接调用 | `examples/01_*.py` ~ `14_*.py` | 从入门到进阶：仿真、运动、力控、伺服、坐标系、手眼标定 |
+| SDK 直接调用 | `examples/01_*.py` ~ `24_*.py` | `01`～`19` 对应 A1 网页案例，`20`～`24` 为保留的独立示例 |
 | ROS2 | `examples/ros2/` | 话题订阅、服务调用、轨迹执行 |
 | MoveIt | `examples/moveit/` | 关节规划、笛卡尔路径、Pick & Place |
 | LeRobot | `examples/lerobot/` | 遥操作、数据采集、策略推理、跨臂控制 |
 
-其他独立示例：
+常用示例入口：
 
-- `examples/basic_movej.py` — 关节运动
-- `examples/basic_movel.py` — 笛卡尔直线运动
+- `examples/05_basic_movej.py` — 关节运动
+- `examples/06_basic_movel.py` — 笛卡尔直线运动
 - `examples/servo_control.py` — 实时 100Hz 伺服循环
-- `examples/speed_control.py` — 速度模式（speedj）
-- `examples/freedrive_teach.py` — 示教 + 录制 + 回放
+- `examples/10_speed_control.py` — 速度模式（speedj）
+- `examples/13_teach_replay.py` — 示教 + 录制 + 回放
 - `examples/blending.py` — 多路点轨迹 + blending
 - `examples/gripper_pick_place.py` — 机械臂 + 夹爪抓取
-- `examples/dual_arm.py` — 双臂控制
+- `examples/18_dual_arm.py` — 双臂控制
 - `examples/dual_arm_mujoco_demo.py` — 共享物理场景双臂仿真（公开 DualArm 控制链、桌面接触检查）
 - `examples/mit_control.py` — 底层单电机 MIT 控制
-- `examples/position_control.py` — 位置-速度模式
-- `examples/calibration_demo.py` — 动力学参数辨识（MuJoCo 仿真）
-- `examples/kinematic_calibration_demo.py` — 运动学标定（单点约束法）
+- `examples/08_position_control.py` — 位置-速度模式
+- `examples/15_dynamics_calibration.py` — 动力学参数辨识（MuJoCo 仿真）
+- `examples/16_kinematic_calibration.py` — 运动学标定（单点约束法）
 - `examples/trajectory_planning_demo.py` — 轨迹规划对比（梯形、S曲线、Ruckig、TOPP-RA）
 - `examples/mujoco_trajectory_comparison.py` — MuJoCo 轨迹验证（自动化正确性检查）
 

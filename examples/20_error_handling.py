@@ -5,7 +5,7 @@
 所有错误都抛出 OneroError（不会静默失败），用户只需 try/except。
 
 运行 (仿真):
-    python examples/03_error_handling.py
+    python examples/20_error_handling.py
 """
 
 from onero_sdk import Arm, OneroError

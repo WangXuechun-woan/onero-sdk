@@ -65,7 +65,7 @@ class OneroSafetyError(OneroError):
         self.joint_index = joint_index
         msg = f"Safety stop: {reason}"
         if joint_index is not None:
-            msg += f" (joint {joint_index})"
+            msg += f" (joint {joint_index + 1})"
         super().__init__(msg)
 
 

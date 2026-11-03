@@ -29,7 +29,7 @@ def main():
         print("Running sine wave trajectory (MIT mode)...")
         kp, kd = 30.0, 1.0
         freq = 0.5  # Hz
-        amplitude = 1.0  # rad
+        amplitude = 5.0  # rad
         duration = 5.0  # seconds
 
         t0 = time.monotonic()

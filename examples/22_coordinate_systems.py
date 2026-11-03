@@ -15,7 +15,7 @@
 
 运行:
     pip install onero-sdk[ik]
-    python examples/10_coordinate_systems.py
+    python examples/22_coordinate_systems.py
 """
 
 import math

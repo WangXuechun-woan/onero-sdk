@@ -5,12 +5,34 @@
 以及使用 blending 实现不停顿的平滑过渡。
 
 运行:
-    python examples/02_multi_waypoint.py
+    python examples/19_multi_waypoint.py         # MuJoCo 仿真
+    python examples/19_multi_waypoint.py --real  # 真机
 """
+
+import argparse
 
 from onero_sdk import Arm
 
-arm = Arm("A1R", channel="can0")
+parser = argparse.ArgumentParser(description="A1R 多路点运动演示")
+parser.add_argument("--real", action="store_true", help="连接 CAN 真机（默认仿真）")
+args = parser.parse_args()
+
+mounting = "humanoid_right"
+viewer = None
+if args.real:
+    arm = Arm("A1R", channel="can0", mounting=mounting)
+else:
+    try:
+        import mujoco.viewer
+        from onero_sdk.mujoco_backend import MujocoBackend
+    except ImportError as exc:
+        raise SystemExit('仿真依赖未安装，请运行: pip install -e ".[sim]"') from exc
+
+    backend = MujocoBackend(model_name="A1R", realtime=True, mounting=mounting)
+    viewer = mujoco.viewer.launch_passive(backend._model, backend._data)
+    backend._on_step = viewer.sync
+    arm = Arm("A1R", backend=backend, mounting=mounting)
+
 arm.enable()
 
 try:
@@ -44,3 +66,6 @@ try:
 
 finally:
     arm.disable()
+    arm.close()
+    if viewer is not None:
+        viewer.close()

@@ -9,19 +9,19 @@
 | 我想要... | 看哪个示例 |
 |-----------|-----------|
 | 快速跑起来试试 | [01_quickstart_sim.py](#01-仿真快速开始) |
-| 让臂走多个点位 | [02_multi_waypoint.py](#02-多路点运动) |
-| 处理异常和错误 | [03_error_handling.py](#03-异常处理) |
-| 画圆/画弧线 | [04_circular_motion.py](#04-圆弧运动) |
-| 调整刚度/柔顺 | [05_stiffness.py](#05-刚度调节) |
-| 读取关节状态 | [06_state_monitoring.py](#06-状态监控) |
-| 紧急停止/安全 | [07_safe_stop.py](#07-安全停止) |
-| 力控/力矩控制 | [08_force_control.py](#08-力控) |
+| 让臂走多个点位 | [19_multi_waypoint.py](#19-多路点运动) |
+| 处理异常和错误 | [20_error_handling.py](#20-异常处理) |
+| 画圆/画弧线 | [07_circular_motion.py](#07-圆弧运动) |
+| 调整刚度/柔顺 | [21_stiffness.py](#21-刚度调节) |
+| 读取关节状态 | [03_state_monitoring.py](#03-状态监控) |
+| 紧急停止/安全 | [04_safe_stop.py](#04-安全停止) |
+| 力控/力矩控制 | [14_force_control.py](#14-力控) |
 | 实时伺服(高频) | [09_realtime_servo.py](#09-实时伺服) |
-| 了解坐标系 | [10_coordinate_systems.py](#10-坐标系) |
-| 示教录制与回放 | [11_teach_replay.py](#11-示教回放) |
-| 连接真实硬件 | [12_hardware_setup.py](#12-硬件配置) |
-| 夹爪/工具坐标 | [13_tool_frame.py](#13-工具坐标系) |
-| 相机标定/手眼标定 | [14_camera_calibration.py](#14-相机与手眼标定) |
+| 了解坐标系 | [22_coordinate_systems.py](#22-坐标系) |
+| 示教录制与回放 | [13_teach_replay.py](#13-示教回放) |
+| 连接真实硬件 | [23_hardware_setup.py](#23-硬件配置) |
+| 夹爪/工具坐标 | [11_tool_frame.py](#11-工具坐标系) |
+| 相机标定/手眼标定 | [17_camera_calibration.py](#17-相机与手眼标定) |
 | 通过 ROS2 控制 | [ros2/](#ros2-示例) |
 | MoveIt 运动规划 | [moveit/](#moveit-示例) |
 | LeRobot 遥操作/AI | [lerobot/](#lerobot-示例) |
@@ -39,50 +39,50 @@
 
 **适用场景:** 刚拿到 SDK、没有硬件时的第一步。
 
-### 02 多路点运动
-**文件:** `02_multi_waypoint.py`
+### 19 多路点运动
+**文件:** `19_multi_waypoint.py`
 
 让机械臂依次经过多个目标点位，包括路径平滑（blending）。
 
 **适用场景:** 搬运、码垛、巡检等需要走多个固定点的任务。
 
-### 03 异常处理
-**文件:** `03_error_handling.py`
+### 20 异常处理
+**文件:** `20_error_handling.py`
 
 演示 SDK 可能抛出的各种异常及正确处理方式。
 
 **适用场景:** 编写生产级代码时参考，确保程序不会因异常而失控。
 
-### 04 圆弧运动
-**文件:** `04_circular_motion.py`
+### 07 圆弧运动
+**文件:** `07_circular_motion.py`
 
 末端沿圆弧路径运动（movec），通过 3 个点定义一段圆弧。
 
 **适用场景:** 涂胶、焊接、打磨等需要曲线路径的任务。
 
-### 05 刚度调节
-**文件:** `05_stiffness.py`
+### 21 刚度调节
+**文件:** `21_stiffness.py`
 
 动态调整关节刚度（kp/kd），实现从"硬"到"软"的切换。
 
 **适用场景:** 人机协作、柔顺装配、力位混合控制。
 
-### 06 状态监控
-**文件:** `06_state_monitoring.py`
+### 03 状态监控
+**文件:** `03_state_monitoring.py`
 
 实时读取关节角度、速度、力矩等状态信息。
 
 **适用场景:** 调试、数据记录、状态可视化。
 
-### 07 安全停止
-**文件:** `07_safe_stop.py`
+### 04 安全停止
+**文件:** `04_safe_stop.py`
 
 多线程下安全停止运动中的机械臂，包括减速停止和急停。
 
 **适用场景:** 安全系统集成、紧急情况处理、多线程控制架构。
 
-### 08 力控
-**文件:** `08_force_control.py`
+### 14 力控
+**文件:** `14_force_control.py`
 
 力/力矩控制模式，末端在指定方向上施加恒力。
 
@@ -91,40 +91,40 @@
 ### 09 实时伺服
 **文件:** `09_realtime_servo.py`
 
-200Hz 实时伺服（servoj），直接发送关节角命令，无内部插值。
+100Hz 实时伺服（servoj），直接发送关节角命令，无内部插值。
 
 **适用场景:** 自定义轨迹生成器、视觉伺服闭环、高频控制算法。
 
-### 10 坐标系
-**文件:** `10_coordinate_systems.py`
+### 22 坐标系
+**文件:** `22_coordinate_systems.py`
 
 关节空间 vs 笛卡尔空间，正运动学/逆运动学，位姿表示方式。
 
 **适用场景:** 理解基础概念、关节运动与末端运动的转换关系。
 
-### 11 示教回放
-**文件:** `11_teach_replay.py`
+### 13 示教回放
+**文件:** `13_teach_replay.py`
 
 Freedrive（零力拖动）模式下录制轨迹，然后精确回放。
 
 **适用场景:** 快速编程（无需手写坐标）、演示录制、轨迹采集。
 
-### 12 硬件配置
-**文件:** `12_hardware_setup.py`
+### 23 硬件配置
+**文件:** `23_hardware_setup.py`
 
 连接真实硬件的完整流程：CAN 总线配置、使能、状态检查。
 
 **适用场景:** 首次连接硬件、排查连接问题。
 
-### 13 工具坐标系
-**文件:** `13_tool_frame.py`
+### 11 工具坐标系
+**文件:** `11_tool_frame.py`
 
 设置 TCP（工具中心点）偏移，使运动指令以工具尖端为参考。
 
 **适用场景:** 安装了夹爪、灵巧手、吸盘、焊枪等工具后的坐标系配置。
 
-### 14 相机与手眼标定
-**文件:** `14_camera_calibration.py`
+### 17 相机与手眼标定
+**文件:** `17_camera_calibration.py`
 
 腕部相机坐标系变换、手眼标定流程、相机检测结果转换到机械臂坐标。
 
@@ -254,12 +254,12 @@ pip install -e lerobot/lerobot_teleoperator_onero
 
 ### 从零开始
 ```
-01_quickstart_sim → 12_hardware_setup → 02_multi_waypoint
+01_quickstart_sim → 23_hardware_setup → 19_multi_waypoint
 ```
 
 ### 视觉抓取
 ```
-13_tool_frame → 14_camera_calibration → moveit/03_pick_place
+11_tool_frame → 17_camera_calibration → moveit/03_pick_place
 ```
 
 ### AI 训练数据采集
@@ -280,17 +280,17 @@ ros2/01_joint_states → ros2/02_movej_service → ros2/03_trajectory → moveit
 
 | 文件 | 说明 |
 |------|------|
-| `basic_movej.py` | 最简 movej 调用 |
-| `basic_movel.py` | 最简 movel 调用 |
+| `05_basic_movej.py` | 最简 movej 调用 |
+| `06_basic_movel.py` | 最简 movel 调用 |
 | `blending.py` | 路径平滑过渡 |
-| `dual_arm.py` | 双臂协同控制 |
-| `freedrive_teach.py` | 零力示教模式 |
+| `18_dual_arm.py` | 双臂协同控制 |
+| `freedrive_teach.py` | 旧版示教兼容示例；A1 文档使用 `13_teach_replay.py` |
 | `gripper_pick_place.py` | 夹爪抓取 |
 | `mit_control.py` | MIT 阻抗底层控制 |
 | `mujoco_demo.py` | 单臂 MuJoCo 仿真演示 |
 | `dual_arm_mujoco_demo.py` | 双臂共享场景仿真；通过公开 `DualArm` 控制链并检查桌面接触 |
-| `position_control.py` | 位置控制模式 |
+| `08_position_control.py` | 位置控制模式 |
 | `servo_control.py` | 伺服控制 |
-| `speed_control.py` | 速度控制模式 |
+| `10_speed_control.py` | 速度控制模式 |
 | `trajectory_planning_demo.py` | 轨迹规划演示 |
-| `calibration_demo.py` | 运动学标定 |
+| `15_dynamics_calibration.py` | 动力学参数标定 |

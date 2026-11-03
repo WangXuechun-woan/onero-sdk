@@ -844,12 +844,12 @@ class Arm(ArmTransformsMixin):
                     p_min, p_max = self._safety._joint_limits[worst]
                     if joints[worst] < p_min - 1e-6 or joints[worst] > p_max + 1e-6:
                         logger.warning(
-                            f"movej: joint {worst} target {joints[worst]:.3f} "
+                            f"movej: joint {worst + 1} target {joints[worst]:.3f} "
                             f"outside limits [{p_min:.3f}, {p_max:.3f}], "
                             f"clamped to limit (residual {errors[worst]:+.3f} rad)")
                     else:
                         logger.warning(
-                            f"movej: joint {worst} did not reach target within "
+                            f"movej: joint {worst + 1} did not reach target within "
                             f"motion window (residual {errors[worst]:+.3f} rad, "
                             f"max across joints {max_err:.3f} rad). "
                             f"Servo tracking lag — extend duration or lower payload/speed.")

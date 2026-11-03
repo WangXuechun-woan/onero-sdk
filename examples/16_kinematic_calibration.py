@@ -7,7 +7,7 @@
     优化关节原点的微小修正量，使所有构型的 FK 输出收敛到同一点。
 
 运行方式:
-    python examples/kinematic_calibration_demo.py
+    python examples/16_kinematic_calibration.py
 
 该示例使用 MuJoCo 仿真演示流程（无需真实硬件）。
 实际使用时，替换为真实 Arm 的关节角度读取即可。

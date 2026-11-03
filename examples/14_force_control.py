@@ -13,7 +13,7 @@
   类似 servoj，而非像 movej 那样自带阻塞。
 
 运行:
-    python examples/08_force_control.py
+    python examples/14_force_control.py
 """
 
 import time

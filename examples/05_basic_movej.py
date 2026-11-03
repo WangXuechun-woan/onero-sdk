@@ -10,7 +10,7 @@ from onero_sdk import Arm
 with Arm("A1R", channel="can0") as arm:
     # Move to target joint angles over 3 seconds
     arm.movej(
-        joints=[0.0, 0.5, 0.0, -0.3, 0.0, 0.0, 0.0],
+        joints=[0.0, -0.5, 0.3, -0.3, 0.0, 0.3, 0.0],
         duration=3.0,
     )
 

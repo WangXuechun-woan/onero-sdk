@@ -11,7 +11,7 @@ Example 15: 安装方式 (Mounting) — 侧装、倒装、肩装配置
   - 人形肩装: Z 朝外
   - 天花板/龙门架倒装: Z 朝下
 
-Run: python examples/15_mounting.py
+Run: python examples/24_mounting.py
 """
 
 import numpy as np

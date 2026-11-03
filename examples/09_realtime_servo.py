@@ -49,8 +49,8 @@ try:
 
     print("完成!")
 
-    # === 带力前馈的 servoj ===
-    print("\n带力前馈 (更好的跟踪)...")
+    # === 带默认重力补偿的 servoj ===
+    print("\n带重力补偿 (更好的跟踪)...")
     t0 = time.monotonic()
 
     while True:
@@ -61,8 +61,9 @@ try:
         target = [0.0] * 7
         target[1] = -0.3 * math.sin(2.0 * math.pi * 1.0 * elapsed)
 
-        # tau_ff: 前馈力矩（可以是重力补偿或动力学模型输出）
-        arm.servoj(target, tau_ff=[0.0] * 7)
+        # 不传 tau_ff 时，SDK 使用当前姿态的重力补偿。
+        # 显式传入全零会关闭重力补偿，实机上可能导致下坠或过载。
+        arm.servoj(target)
 
         time.sleep(max(0, dt - (time.monotonic() - t0 - elapsed)))
 

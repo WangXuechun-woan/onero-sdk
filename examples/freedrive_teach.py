@@ -20,7 +20,7 @@ try:
 
     # Enter freedrive — arm can be guided by hand
     # (requires pinocchio: pip install onero-sdk[dynamics])
-    arm.freedrive_enable(damping=0.3)
+    arm.freedrive_enable(damping=1.0)
     print("Freedrive active — guide the arm. Press Ctrl+C to stop.")
 
     # Let the user guide for 10 seconds

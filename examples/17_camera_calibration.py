@@ -25,7 +25,7 @@
 
 运行:
     pip install opencv-python numpy
-    python examples/14_camera_calibration.py
+    python examples/17_camera_calibration.py
 """
 
 import math

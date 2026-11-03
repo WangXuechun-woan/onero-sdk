@@ -9,7 +9,7 @@
 也可以将轨迹保存到文件，下次启动直接加载。
 
 运行:
-    python examples/11_teach_replay.py
+    python examples/13_teach_replay.py
 """
 
 import time

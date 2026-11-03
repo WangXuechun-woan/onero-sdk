@@ -13,15 +13,15 @@ arm.enable()
 
 try:
     # Move joint 1 at 0.5 rad/s for 3 seconds
-    velocities = [0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0]
-    arm.speedj(velocities, acceleration=1.0, duration=3.0)
+    velocities = [0.0, 0.0, 0.0, -0.3, 0.0, 0.1, 0.0]
+    arm.speedj(velocities, acceleration=1.0, duration=5.0)
 
     # Move multiple joints simultaneously
-    velocities = [0.0, -0.3, 0.2, 0.0, 0.0, 0.1, 0.0]
-    arm.speedj(velocities, acceleration=2.0, duration=2.0)
+    velocities = [0.2, 0.0, 0.0, 0.4, 0.0, -0.2, 0.0]
+    arm.speedj(velocities, acceleration=2.0, duration=5.0)
 
     # Return home
-    arm.home(duration=3.0)
+    arm.home(duration=5.0)
 
 finally:
     arm.disable()

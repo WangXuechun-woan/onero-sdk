@@ -5,7 +5,7 @@ CAN 硬件设置 — 使用 SDK 前的硬件准备。
 本文件不运行 — 仅作为参考文档。
 
 运行:
-    cat examples/12_hardware_setup.py
+    cat examples/23_hardware_setup.py
 """
 
 # =================================================================

@@ -1097,18 +1097,18 @@ Log levels used:
 
 ## Examples
 
-- `examples/basic_movej.py` — Move to joint angles
-- `examples/basic_movel.py` — Cartesian straight-line motion
+- `examples/05_basic_movej.py` — Move to joint angles
+- `examples/06_basic_movel.py` — Cartesian straight-line motion
 - `examples/servo_control.py` — Real-time 100Hz servo loop
-- `examples/speed_control.py` — Velocity mode (speedj)
-- `examples/freedrive_teach.py` — Freedrive + record + replay
+- `examples/10_speed_control.py` — Velocity mode (speedj)
+- `examples/13_teach_replay.py` — Freedrive + record + replay
 - `examples/blending.py` — Multi-waypoint trajectory with blending
 - `examples/gripper_pick_place.py` — Arm + gripper pick-and-place
-- `examples/dual_arm.py` — Dual arm control
+- `examples/18_dual_arm.py` — Dual arm control
 - `examples/mit_control.py` — Low-level single motor control
-- `examples/position_control.py` — Position-velocity mode
-- `examples/calibration_demo.py` — Dynamics parameter identification (MuJoCo)
-- `examples/kinematic_calibration_demo.py` — Kinematic calibration (single-point method)
+- `examples/08_position_control.py` — Position-velocity mode
+- `examples/15_dynamics_calibration.py` — Dynamics parameter identification (MuJoCo)
+- `examples/16_kinematic_calibration.py` — Kinematic calibration (single-point method)
 - `examples/trajectory_planning_demo.py` — Trajectory profiles comparison (trapezoidal, S-curve, Ruckig, TOPP-RA)
 - `examples/mujoco_trajectory_comparison.py` — MuJoCo validation of trajectory profiles (automated checks)
 - `examples/dual_arm_mujoco_demo.py` — Dual-arm simulation with torso + desk

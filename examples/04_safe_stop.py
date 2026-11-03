@@ -5,7 +5,7 @@
 例如: 碰撞检测、用户按下急停按钮、外部传感器触发等。
 
 运行:
-    python examples/07_safe_stop.py
+    python examples/04_safe_stop.py
 """
 
 import time
